@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+
+#
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+# 导入spark目录
+# source执行命令不重启生效，如source /etc/profile
+if [ -z "${SPARK_HOME}" ]; then
+  source "$(dirname "$0")"/find-spark-home
+fi
+
+# 导入spark-env中的设置
+. "${SPARK_HOME}"/bin/load-spark-env.sh
+
+# Find the java binary
+# 加载java路径,赋值给RUNNER
+if [ -n "${JAVA_HOME}" ]; then
+  RUNNER="${JAVA_HOME}/bin/java" #  判断java环境变量不为0,获取java路径
+else
+  if [ "$(command -v java)" ]; then # 如果为0,查看java路径
+    RUNNER="java"
+  else
+    echo "JAVA_HOME is not set" >&2  # 查看不到报错,并错误退出
+    exit 1
+  fi
+fi
+
+# Find Spark jars.
+# 加载spark的jars目录位置
+if [ -d "${SPARK_HOME}/jars" ]; then  #判断是目录
+  SPARK_JARS_DIR="${SPARK_HOME}/jars"
+else
+  SPARK_JARS_DIR="${SPARK_HOME}/assembly/target/scala-$SPARK_SCALA_VERSION/jars"
+fi
+
+
+# 定义执行文件径路LAUNCH_CLASSPATH
+# 判断spark_jars不是目录,而且Testing变量值为0,报错退出
+# 都存在则定义执行文件径路为jars位置下
+if [ ! -d "$SPARK_JARS_DIR" ] && [ -z "$SPARK_TESTING$SPARK_SQL_TESTING" ]; then
+  echo "Failed to find Spark jars directory ($SPARK_JARS_DIR)." 1>&2
+  echo "You need to build Spark with the target \"package\" before running this program." 1>&2
+  exit 1
+else
+  LAUNCH_CLASSPATH="$SPARK_JARS_DIR/*"
+fi
+
+# Add the launcher build dir to the classpath if requested.
+# 根据运行环境不同,为执行文件目录添加多路径
+if [ -n "$SPARK_PREPEND_CLASSES" ]; then
+  LAUNCH_CLASSPATH="${SPARK_HOME}/launcher/target/scala-$SPARK_SCALA_VERSION/classes:$LAUNCH_CLASSPATH"
+fi
+
+# For tests
+# 如果Test模式,关闭Yarn和Hadoop
+if [[ -n "$SPARK_TESTING" ]]; then
+  unset YARN_CONF_DIR
+  unset HADOOP_CONF_DIR
+fi
+
+# The launcher library will print arguments separated by a NULL character, to allow arguments with
+# characters that would be otherwise interpreted by the shell. Read that in a while loop, populating
+# an array that will be used to exec the final command.
+#
+# The exit code of the launcher is appended to the output, so the parent shell removes it from the
+# command array and checks the value to see if the launcher succeeded.
+
+# 调用执行文件目录下的org.apache.spark.launcher.Main方法
+# 传入执行类及参数,解析后返回参数列表
+build_command() {
+  "$RUNNER" -Xmx128m -cp "$LAUNCH_CLASSPATH$LAUNCH_CLASSPATH" org.apache.spark.launcher.Main "$@"
+  printf "%d\0" $?
+}
+
+# 关闭posix,posix不允许进程替换,并定义一个数组CMD
+# Turn off posix mode since it does not allow process substitution
+set +o posix
+CMD=()
+
+# 调用build_command方法,就是调用org.apache.spark.launcher.Main
+# 传入执行类,解析后得到参数,使用read命令通过while循环读取放到CMD数组中
+while IFS= read -d '' -r ARG; do
+  CMD+=("$ARG")
+done < <(build_command "$@")
+
+# ${#CMD[@]}是CMD数组元素个数,shell的${arr[@]}所有元素,${#arr[@]}数组长度
+COUNT=${#CMD[@]}
+LAST=$((COUNT - 1)) # 同last = arr.len-1,最后一个元素索引,就是添加的退出码
+LAUNCHER_EXIT_CODE=${CMD[$LAST]}
+
+# Certain JVM failures result in errors being printed to stdout (instead of stderr), which causes
+# the code that parses the output of the launcher to get confused. In those cases, check if the
+# exit code is an integer, and if it's not, handle it as a special error case.
+# 检查退出码是否为整数，不是则打印除退出码以外的参数,以错误码退出
+# ^匹配开始,[0-9]范围,+出现1次以上,$匹配结束
+# head -n-1 显示到倒数第一行
+if ! [[ $LAUNCHER_EXIT_CODE =~ ^[0-9]+$ ]]; then
+  echo "${CMD[@]}" | head -n-1 1>&2
+  exit 1
+fi
+# 如果退出码不为0,将其作为退出码退出
+
+if [ $LAUNCHER_EXIT_CODE != 0 ]; then
+  exit $LAUNCHER_EXIT_CODE
+fi
+
+# 执行CMD中的java -cp命令
+# ${CMD[@]:0:$LAST} 去除索引为0的,取1到最后一个元素
+CMD=("${CMD[@]:0:$LAST}")
+exec "${CMD[@]}"
