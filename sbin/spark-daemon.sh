@@ -174,10 +174,20 @@ run_command() {
   echo "starting $command, logging to $log"
 
   case "$mode" in
+
+    # nice -n 指定优先级执行,$SPARK_NICENESS是前面指定的优先级0
+    # bash 执行后面的脚本
+    # 如果参数是class,即start
+    # 直译为:
+    # execute_commamd nice -n 0 bin/spark-class org.apache.spark.master.Master --host cdh-master
+    # --port 7077 --webui-port 8080
     (class)
       execute_command nice -n "$SPARK_NICENESS" "${SPARK_HOME}"/bin/spark-class "$command" "$@"
       ;;
 
+    # 直译为:
+    # execute_commamd nice -n 0 bin/spark-submit org.apache.spark.master.Master --host cdh-master
+    # --port 7077 --webui-port 8080
     (submit)
       execute_command nice -n "$SPARK_NICENESS" bash "${SPARK_HOME}"/bin/spark-submit --class "$command" "$@"
       ;;

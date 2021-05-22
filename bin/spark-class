@@ -121,4 +121,5 @@ fi
 # 执行CMD中的java -cp命令
 # ${CMD[@]:0:$LAST} 去除索引为0的,取1到最后一个元素
 CMD=("${CMD[@]:0:$LAST}")
+#是解析成命令后返回给spark-class的 exec ${CMD[@]} 真正执行
 exec "${CMD[@]}"

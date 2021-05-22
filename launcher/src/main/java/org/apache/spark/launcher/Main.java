@@ -31,11 +31,22 @@ import static org.apache.spark.launcher.CommandBuilderUtils.*;
  * 这个类是提供spark内部脚本调用的工具类，并不是真正的执行入口。它负责调用其他类，对参数进行解析，
  * 并生成执行命令，最后将命令返回给spark-class的 exec “${CMD[@]}”执行。
  *
+ *
+ * org.apache.spark.launcher.Main
+ * 这个类是提供spark内部脚本调用的工具类，通过调用其他类构建执行命令，并不是执行入口。
+ *
+ * 最后根据提交的类型spark-submit或spark-class，构建对应的命令解析对象SparkSubmitCommandBuilder和SparkClassCommandBuilder，
+ * 再通过buildCommand方法构造执行命令。
  * Command line interface for the Spark launcher. Used internally by Spark scripts.
  */
 class Main {
 
   /**
+   * main这个类主要是解析参数，把需要的参数放到执行对象中
+   * 如果是直接启动spark-shell调用spark-class传入的参数:
+   *
+   * SparkSubmitCommandBuilder、SparkClassCommandBuilder 和 buildCommand。
+   *
    * Usage: Main [class] [class args]
    * <p>
    * This CLI works in two different modes:
@@ -52,6 +63,7 @@ class Main {
    * character. On Windows, the output is a command line suitable for direct execution from the
    * script.
    */
+  //java -Xmx128m -cp ...\jars\* org.apache.spark.launcher.Main org.apache.spark.deploy.master.Master --host cdh-master --port 7077 --webui-port 8080
   public static void main(String[] argsArray) throws Exception {
     checkArgument(argsArray.length > 0, "Not enough arguments: missing class name.");
     // Arrays.asList存在的坑：https://javazhiyin.blog.csdn.net/article/details/97207012
@@ -75,24 +87,28 @@ class Main {
         printLaunchCommand = false;
         System.err.println("Error: " + e.getMessage());
         System.err.println();
-
+        //当spark-submit提交失败时,这里会再进行一次解析,再不行才会提示用法
         MainClassOptionParser parser = new MainClassOptionParser();
         try {
           parser.parse(args);
         } catch (Exception ignored) {
           // Ignore parsing exceptions.
         }
-
+        // 帮助信息
         List<String> help = new ArrayList<>();
         if (parser.className != null) {
           help.add(parser.CLASS);
           help.add(parser.className);
         }
         help.add(parser.USAGE_ERROR);
+        // 构建spark-submit命令和对应的参数对象
         AbstractCommandBuilder builder = new SparkSubmitCommandBuilder(help);
         cmd = buildCommand(builder, env, printLaunchCommand);
       }
     } else {
+      // 构建spark-class命令对象
+      // 主要是在这个类里解析了命令对象和参数
+      // 构建命令对象,spark-class命令和对应的参数
       AbstractCommandBuilder builder = new SparkClassCommandBuilder(className, args);
       cmd = buildCommand(builder, env, printLaunchCommand);
     }
@@ -167,6 +183,7 @@ class Main {
   }
 
   /**
+   * 当spark-submit提交失败时,这里会再进行一次解析,再不行才会提示用法
    * A parser used when command line parsing fails for spark-submit. It's used as a best-effort
    * at trying to identify the class the user wanted to invoke, since that may require special
    * usage strings (handled by SparkSubmitArguments).
