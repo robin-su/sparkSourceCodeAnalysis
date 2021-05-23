@@ -156,11 +156,12 @@ private[deploy] class Master(
         "off the RestSubmissionServer with spark.master.rest.enabled=false, or do not use " +
         "authentication.")
   }
-  // 启动前将所有信息准备就绪
+//  启动前将所有信息准备就绪
   override def onStart(): Unit = {
     logInfo("Starting Spark master at " + masterUrl)
     logInfo(s"Running Spark version ${org.apache.spark.SPARK_VERSION}")
     webUi = new MasterWebUI(this, webUiPort)
+//    启动web ui，其实部署在jetty容器中
     webUi.bind()
     masterWebUiUrl = "http://" + masterPublicAddress + ":" + webUi.boundPort
     if (reverseProxy) {
@@ -170,6 +171,8 @@ private[deploy] class Master(
        s"Applications UIs are available at $masterWebUiUrl")
     }
     //超时检查
+    // 按照固定的频率去启动线程来检查 Worker 是否超时. 其实就是给自己发信息: CheckForWorkerTimeOut
+    // 默认是每分钟检查一次.
     checkForWorkerTimeOutTask = forwardMessageThread.scheduleAtFixedRate(new Runnable {
       override def run(): Unit = Utils.tryLogNonFatalError {
         self.send(CheckForWorkerTimeOut)
@@ -256,6 +259,7 @@ private[deploy] class Master(
       }
       logInfo("I have been elected leader! New state: " + state)
       if (state == RecoveryState.RECOVERING) {
+//        开始恢复
         beginRecovery(storedApps, storedDrivers, storedWorkers)
         recoveryCompletionTask = forwardMessageThread.schedule(new Runnable {
           override def run(): Unit = Utils.tryLogNonFatalError {
@@ -552,11 +556,15 @@ private[deploy] class Master(
 
   private def beginRecovery(storedApps: Seq[ApplicationInfo], storedDrivers: Seq[DriverInfo],
       storedWorkers: Seq[WorkerInfo]) {
+//    遍历每个storedApps,进行重新注册
     for (app <- storedApps) {
       logInfo("Trying to recover app: " + app.id)
       try {
+        // 注册应用
         registerApplication(app)
+//        将应用的状态设置成UNKONWN
         app.state = ApplicationState.UNKNOWN
+//        通知worker master发生了变更
         app.driver.send(MasterChanged(self, masterWebUiUrl))
       } catch {
         case e: Exception => logInfo("App " + app.id + " had exception on reconnect")
@@ -876,6 +884,7 @@ private[deploy] class Master(
   }
 
   private def registerApplication(app: ApplicationInfo): Unit = {
+    // driver 地址
     val appAddress = app.driver.address
     if (addressToApp.contains(appAddress)) {
       logInfo("Attempted to re-register application at same address: " + appAddress)
@@ -883,10 +892,15 @@ private[deploy] class Master(
     }
 
     applicationMetricsSystem.registerSource(app.appSource)
+//    保存app信息
     apps += app
+//    保存appId和app的映射关系
     idToApp(app.id) = app
+//    保存drvier与app的映射关系
     endpointToApp(app.driver) = app
+//    rpc中注册的ip地址与app的映射关系
     addressToApp(appAddress) = app
+//    保存队列中保存的应用
     waitingApps += app
   }
 

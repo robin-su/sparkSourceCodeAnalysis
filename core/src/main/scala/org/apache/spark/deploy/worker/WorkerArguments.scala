@@ -31,13 +31,16 @@ private[worker] class WorkerArguments(args: Array[String], conf: SparkConf) {
   var host = Utils.localHostName()
   var port = 0
   var webUiPort = 8081
+  // 默认核心数
   var cores = inferDefaultCores()
+//  默认的内存
   var memory = inferDefaultMemory()
   var masters: Array[String] = null
   var workDir: String = null
   var propertiesFile: String = null
 
   // Check for settings in environment variables
+// 先检查环境变量中的设置，其实是前面已经先加载了spark-env中配置的倒入环境变量
   if (System.getenv("SPARK_WORKER_PORT") != null) {
     port = System.getenv("SPARK_WORKER_PORT").toInt
   }
@@ -53,7 +56,7 @@ private[worker] class WorkerArguments(args: Array[String], conf: SparkConf) {
   if (System.getenv("SPARK_WORKER_DIR") != null) {
     workDir = System.getenv("SPARK_WORKER_DIR")
   }
-
+  // 在这里对启动时定义的参数进行解析
   parse(args.toList)
 
   // This mutates the SparkConf, so all accesses to it must be made after this line
@@ -66,6 +69,8 @@ private[worker] class WorkerArguments(args: Array[String], conf: SparkConf) {
   checkWorkerMemory()
 
   @tailrec
+  // 解析输入参数的方法parse
+  // 其实就是解析 --string string,判断--后的string,如果匹配,把后面的string赋值给value
   private def parse(args: List[String]): Unit = args match {
     case ("--ip" | "-i") :: value :: tail =>
       Utils.checkHost(value)
