@@ -33,6 +33,10 @@ private[master] class MasterArguments(args: Array[String], conf: SparkConf) exte
   var propertiesFile: String = null
 
   // Check for settings in environment variables
+  // spark-env.sh配置的参数
+  // 通过load-spark-env.sh导入到环境变量中,在这里会加载
+  // 加载环境变量中的配置,获取hostname,如果设置了IP,会提示使用hostname
+  // Check for settings in environment variables
   if (System.getenv("SPARK_MASTER_IP") != null) {
     logWarning("SPARK_MASTER_IP is deprecated, please use SPARK_MASTER_HOST")
     host = System.getenv("SPARK_MASTER_IP")
@@ -47,10 +51,11 @@ private[master] class MasterArguments(args: Array[String], conf: SparkConf) exte
   if (System.getenv("SPARK_MASTER_WEBUI_PORT") != null) {
     webUiPort = System.getenv("SPARK_MASTER_WEBUI_PORT").toInt
   }
-
+  // 将spark-class传入的参数port,webuiport及默认获取的host进行解析
   parse(args.toList)
 
   // This mutates the SparkConf, so all accesses to it must be made after this line
+  // 所有默认配置加载,也就是conf,和--properties-file指定的属性文件
   propertiesFile = Utils.loadDefaultSparkProperties(conf, propertiesFile)
 
   if (conf.contains("spark.master.ui.port")) {
