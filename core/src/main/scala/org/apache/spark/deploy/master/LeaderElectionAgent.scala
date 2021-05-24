@@ -37,6 +37,7 @@ trait LeaderElectable {
 }
 
 /** Single-node implementation of LeaderElectionAgent -- we're initially and always the leader. */
+// master是单节点的实现
 private[spark] class MonarchyLeaderAgent(val masterInstance: LeaderElectable)
   extends LeaderElectionAgent {
   masterInstance.electedLeader()

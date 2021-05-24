@@ -46,81 +46,105 @@ private[deploy] class Master(
     val conf: SparkConf)
   extends ThreadSafeRpcEndpoint with Logging with LeaderElectable {
 
+//  发送消息的线程
   private val forwardMessageThread =
     ThreadUtils.newDaemonSingleThreadScheduledExecutor("master-forward-message-thread")
-
+//  加载hadoopconf配置
   private val hadoopConf = SparkHadoopUtil.get.newConfiguration(conf)
 
-  // For application IDs
+// For application IDs
+//  设置appID
   private def createDateFormat = new SimpleDateFormat("yyyyMMddHHmmss", Locale.US)
-
+// worker 连接超时时间，默认60秒
   private val WORKER_TIMEOUT_MS = conf.getLong("spark.worker.timeout", 60) * 1000
+//  执行完成的app在webUI里保存的数量，默认是200
   private val RETAINED_APPLICATIONS = conf.getInt("spark.deploy.retainedApplications", 200)
+// 保存执行的driver数量，默认是200
   private val RETAINED_DRIVERS = conf.getInt("spark.deploy.retainedDrivers", 200)
+// 断开的worker信息保存数量，默认15
   private val REAPER_ITERATIONS = conf.getInt("spark.dead.worker.persistence", 15)
+// worker回复模式,默认none
   private val RECOVERY_MODE = conf.get("spark.deploy.recoveryMode", "NONE")
+// executor最大运行,默认10
   private val MAX_EXECUTOR_RETRIES = conf.getInt("spark.deploy.maxExecutorRetries", 10)
-
+// workers节点信息
   val workers = new HashSet[WorkerInfo]
+// appId对应的app信息
   val idToApp = new HashMap[String, ApplicationInfo]
+//  队列中等待执行的app信息
   private val waitingApps = new ArrayBuffer[ApplicationInfo]
+//  所有app信息
   val apps = new HashSet[ApplicationInfo]
-
+// workId对应的work节点信息
   private val idToWorker = new HashMap[String, WorkerInfo]
+//  RPC中注册的ip对应的work信息
   private val addressToWorker = new HashMap[RpcAddress, WorkerInfo]
-
+// app与对应RPC注册的信息
   private val endpointToApp = new HashMap[RpcEndpointRef, ApplicationInfo]
+//  RPC中注册的ip与对应的app
   private val addressToApp = new HashMap[RpcAddress, ApplicationInfo]
+// 完成的app
   private val completedApps = new ArrayBuffer[ApplicationInfo]
   private var nextAppNumber = 0
-
+// driver信息
   private val drivers = new HashSet[DriverInfo]
   private val completedDrivers = new ArrayBuffer[DriverInfo]
   // Drivers currently spooled for scheduling
   private val waitingDrivers = new ArrayBuffer[DriverInfo]
   private var nextDriverNumber = 0
-
+//  检查host
   Utils.checkHost(address.host)
+//  assert(host != null && host.indexOf(':') == -1, s"Expected hostname (not IP) but got $host")
 
+//  master注册Metrics服务
   private val masterMetricsSystem = MetricsSystem.createMetricsSystem("master", conf, securityMgr)
+//  app注册Metrics服务
   private val applicationMetricsSystem = MetricsSystem.createMetricsSystem("applications", conf,
     securityMgr)
+//  就是包含了上面所有信息的master
   private val masterSource = new MasterSource(this)
 
-  // After onStart, webUi will be set
+// After onStart, webUi will be set
+//  webUI,在onStart后会设置
   private var webUi: MasterWebUI = null
-
+// master的公共访问地址
   private val masterPublicAddress = {
     val envVar = conf.getenv("SPARK_PUBLIC_DNS")
     if (envVar != null) envVar else address.host
   }
-
+// master的url,即:spark://192.168.2.1:7077
   private val masterUrl = address.toSparkURL
   private var masterWebUiUrl: String = _
 
+  // 恢复状态为从standby恢复
   private var state = RecoveryState.STANDBY
-
+  // 持久化引擎
   private var persistenceEngine: PersistenceEngine = _
-
+//  选主
   private var leaderElectionAgent: LeaderElectionAgent = _
-
+  // 恢复已完成tesk
   private var recoveryCompletionTask: ScheduledFuture[_] = _
-
+  // 超时的test检查
   private var checkForWorkerTimeOutTask: ScheduledFuture[_] = _
 
   // As a temporary workaround before better ways of configuring memory, we allow users to set
   // a flag that will perform round-robin scheduling across the nodes (spreading out each app
   // among all the nodes) instead of trying to consolidate each app onto a small # of nodes.
+  // 开启内存分配之前的临时解决方案,将app发送到多节点进行计算
   private val spreadOutApps = conf.getBoolean("spark.deploy.spreadOut", true)
 
   // Default maxCores for applications that don't specify it (i.e. pass Int.MaxValue)
+//  未指定参数的app,默认使用最大cores进行计算
   private val defaultCores = conf.getInt("spark.deploy.defaultCores", Int.MaxValue)
+//  是否使用反向代理,默认关闭
   val reverseProxy = conf.getBoolean("spark.ui.reverseProxy", false)
   if (defaultCores < 1) {
     throw new SparkException("spark.deploy.defaultCores must be positive")
   }
 
   // Alternative application submission gateway that is stable across Spark versions
+//  备用app提交网关
+//  开启rest服务,默认开启
   private val restServerEnabled = conf.getBoolean("spark.master.rest.enabled", false)
   private var restServer: Option[StandaloneRestServer] = None
   private var restServerBoundPort: Option[Int] = None
@@ -132,11 +156,12 @@ private[deploy] class Master(
         "off the RestSubmissionServer with spark.master.rest.enabled=false, or do not use " +
         "authentication.")
   }
-
+//  启动前将所有信息准备就绪
   override def onStart(): Unit = {
     logInfo("Starting Spark master at " + masterUrl)
     logInfo(s"Running Spark version ${org.apache.spark.SPARK_VERSION}")
     webUi = new MasterWebUI(this, webUiPort)
+//    启动web ui，其实部署在jetty容器中
     webUi.bind()
     masterWebUiUrl = "http://" + masterPublicAddress + ":" + webUi.boundPort
     if (reverseProxy) {
@@ -145,27 +170,33 @@ private[deploy] class Master(
       logInfo(s"Spark Master is acting as a reverse proxy. Master, Workers and " +
        s"Applications UIs are available at $masterWebUiUrl")
     }
+    //超时检查
+    // 按照固定的频率去启动线程来检查 Worker 是否超时. 其实就是给自己发信息: CheckForWorkerTimeOut
+    // 默认是每分钟检查一次.
     checkForWorkerTimeOutTask = forwardMessageThread.scheduleAtFixedRate(new Runnable {
       override def run(): Unit = Utils.tryLogNonFatalError {
         self.send(CheckForWorkerTimeOut)
       }
     }, 0, WORKER_TIMEOUT_MS, TimeUnit.MILLISECONDS)
 
+    // rest信息
     if (restServerEnabled) {
       val port = conf.getInt("spark.master.rest.port", 6066)
       restServer = Some(new StandaloneRestServer(address.host, port, conf, self, masterUrl))
     }
     restServerBoundPort = restServer.map(_.start())
-
+    // 注册MetricSystem测量系统
     masterMetricsSystem.registerSource(masterSource)
     masterMetricsSystem.start()
     applicationMetricsSystem.start()
     // Attach the master and app metrics servlet handler to the web ui after the metrics systems are
     // started.
+//    将MetricSystem测量系统添加到webUI
     masterMetricsSystem.getServletHandlers.foreach(webUi.attachHandler)
     applicationMetricsSystem.getServletHandlers.foreach(webUi.attachHandler)
-
+    // 序列化配置信息
     val serializer = new JavaSerializer(conf)
+    // 匹配持久化方式ZOOKEEPER、FILESYSTEM、CUSTOM
     val (persistenceEngine_, leaderElectionAgent_) = RECOVERY_MODE match {
       case "ZOOKEEPER" =>
         logInfo("Persisting recovery state to ZooKeeper")
@@ -183,6 +214,7 @@ private[deploy] class Master(
           .asInstanceOf[StandaloneRecoveryModeFactory]
         (factory.createPersistenceEngine(), factory.createLeaderElectionAgent(this))
       case _ =>
+      // 这里调用了选主机制
         (new BlackHolePersistenceEngine(), new MonarchyLeaderAgent(this))
     }
     persistenceEngine = persistenceEngine_
@@ -215,9 +247,10 @@ private[deploy] class Master(
   override def revokedLeadership() {
     self.send(RevokedLeadership)
   }
-
+//  接受信息判断主从情况
   override def receive: PartialFunction[Any, Unit] = {
     case ElectedLeader =>
+//      如果选主，通过RPC及持久化信息进行判断是否存活
       val (storedApps, storedDrivers, storedWorkers) = persistenceEngine.readPersistedData(rpcEnv)
       state = if (storedApps.isEmpty && storedDrivers.isEmpty && storedWorkers.isEmpty) {
         RecoveryState.ALIVE
@@ -226,6 +259,7 @@ private[deploy] class Master(
       }
       logInfo("I have been elected leader! New state: " + state)
       if (state == RecoveryState.RECOVERING) {
+//        开始恢复
         beginRecovery(storedApps, storedDrivers, storedWorkers)
         recoveryCompletionTask = forwardMessageThread.schedule(new Runnable {
           override def run(): Unit = Utils.tryLogNonFatalError {
@@ -233,22 +267,26 @@ private[deploy] class Master(
           }
         }, WORKER_TIMEOUT_MS, TimeUnit.MILLISECONDS)
       }
-
+//    重新恢复主
     case CompleteRecovery => completeRecovery()
-
+//    如果主被撤销，提示退出
     case RevokedLeadership =>
       logError("Leadership has been revoked -- master shutting down.")
       System.exit(0)
-
+//  如果是注册worker
+//  这里需要worker、master信息和worker配置信息
     case RegisterWorker(
       id, workerHost, workerPort, workerRef, cores, memory, workerWebUiUrl, masterAddress) =>
       logInfo("Registering worker %s:%d with %d cores, %s RAM".format(
         workerHost, workerPort, cores, Utils.megabytesToString(memory)))
+      // 判断Master存活，进行Worker提示或者注册
       if (state == RecoveryState.STANDBY) {
         workerRef.send(MasterInStandby)
+        // master存储，根据id判断worker是否已经存在
       } else if (idToWorker.contains(id)) {
         workerRef.send(RegisterWorkerFailed("Duplicate worker ID"))
       } else {
+        // master存活，且workerid不重复，进行注册
         val worker = new WorkerInfo(id, workerHost, workerPort, cores, memory,
           workerRef, workerWebUiUrl)
         if (registerWorker(worker)) {
@@ -518,11 +556,15 @@ private[deploy] class Master(
 
   private def beginRecovery(storedApps: Seq[ApplicationInfo], storedDrivers: Seq[DriverInfo],
       storedWorkers: Seq[WorkerInfo]) {
+//    遍历每个storedApps,进行重新注册
     for (app <- storedApps) {
       logInfo("Trying to recover app: " + app.id)
       try {
+        // 注册应用
         registerApplication(app)
+//        将应用的状态设置成UNKONWN
         app.state = ApplicationState.UNKNOWN
+//        通知worker master发生了变更
         app.driver.send(MasterChanged(self, masterWebUiUrl))
       } catch {
         case e: Exception => logInfo("App " + app.id + " had exception on reconnect")
@@ -842,6 +884,7 @@ private[deploy] class Master(
   }
 
   private def registerApplication(app: ApplicationInfo): Unit = {
+    // driver 地址
     val appAddress = app.driver.address
     if (addressToApp.contains(appAddress)) {
       logInfo("Attempted to re-register application at same address: " + appAddress)
@@ -849,10 +892,15 @@ private[deploy] class Master(
     }
 
     applicationMetricsSystem.registerSource(app.appSource)
+//    保存app信息
     apps += app
+//    保存appId和app的映射关系
     idToApp(app.id) = app
+//    保存drvier与app的映射关系
     endpointToApp(app.driver) = app
+//    rpc中注册的ip地址与app的映射关系
     addressToApp(appAddress) = app
+//    保存队列中保存的应用
     waitingApps += app
   }
 
@@ -1049,13 +1097,19 @@ private[deploy] object Master extends Logging {
   val SYSTEM_NAME = "sparkMaster"
   val ENDPOINT_NAME = "Master"
 
+  // spark-class传入参数：--port 7077 --webui-port 8080
   def main(argStrings: Array[String]) {
     Thread.setDefaultUncaughtExceptionHandler(new SparkUncaughtExceptionHandler(
       exitOnUncaughtException = false))
+    // 初始化日志输出
     Utils.initDaemon(log)
+    // 创建conf对象其实是读取Spark默认配置的参数
     val conf = new SparkConf
+    // 解析配置,初始化RPC服务和终端
+    // 通过MasterArguments解析RPC需要的参数:host,port,webui-port
     val args = new MasterArguments(argStrings, conf)
     val (rpcEnv, _, _) = startRpcEnvAndEndpoint(args.host, args.port, args.webUiPort, conf)
+//    执行到rpcEnv.awaitTermination()会处于等待Worker连接状态
     rpcEnv.awaitTermination()
   }
 
@@ -1070,10 +1124,15 @@ private[deploy] object Master extends Logging {
       port: Int,
       webUiPort: Int,
       conf: SparkConf): (RpcEnv, Int, Option[Int]) = {
+    // 初始化securityManager
     val securityMgr = new SecurityManager(conf)
+    // 初始化RPC
     val rpcEnv = RpcEnv.create(SYSTEM_NAME, host, port, conf, securityMgr)
+    // 向RPC注册master终端
+    // 这里new Master的时候进行了Master的实例化
     val masterEndpoint = rpcEnv.setupEndpoint(ENDPOINT_NAME,
       new Master(rpcEnv, rpcEnv.address, webUiPort, securityMgr, conf))
+    // rest的绑定端口
     val portsResponse = masterEndpoint.askSync[BoundPortsResponse](BoundPortsRequest)
     (rpcEnv, portsResponse.webUIPort, portsResponse.restPort)
   }

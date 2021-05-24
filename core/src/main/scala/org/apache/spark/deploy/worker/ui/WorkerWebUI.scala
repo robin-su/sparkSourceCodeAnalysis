@@ -37,17 +37,22 @@ class WorkerWebUI(
   extends WebUI(worker.securityMgr, worker.securityMgr.getSSLOptions("standalone"),
     requestedPort, worker.conf, name = "WorkerUI")
   with Logging {
-
+  // 链接超时，参数在下面object中的初始化
   private[ui] val timeout = RpcUtils.askRpcTimeout(worker.conf)
-
+  // 初始化webUI
   initialize()
 
   /** Initialize all components of the server. */
   def initialize() {
+    // LogPage类初始化页面布置
     val logPage = new LogPage(this)
+    // 将web页面添加到UI设置
     attachPage(logPage)
+    // 将worker的配置加载到UI设置
     attachPage(new WorkerPage(this))
+//    指定静态目录用来提供文件服务
     addStaticHandler(WorkerWebUI.STATIC_RESOURCE_BASE)
+//    指定固定访问路径
     attachHandler(createServletHandler("/log",
       (request: HttpServletRequest) => logPage.renderLog(request),
       worker.securityMgr,
@@ -56,6 +61,7 @@ class WorkerWebUI(
 }
 
 private[worker] object WorkerWebUI {
+  // 静态目录位置
   val STATIC_RESOURCE_BASE = SparkUI.STATIC_RESOURCE_DIR
   val DEFAULT_RETAINED_DRIVERS = 1000
   val DEFAULT_RETAINED_EXECUTORS = 1000

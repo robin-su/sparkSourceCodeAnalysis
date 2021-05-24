@@ -136,13 +136,17 @@ class SparkSubmitOptionParser {
    * @throws IllegalArgumentException If an error is found during parsing.
    */
   protected final void parse(List<String> args) {
+    // 判断参数,匹配以--开头的所有参数,可以是--name="Spark shell"的设置
     Pattern eqSeparatedOpt = Pattern.compile("(--[^=]+)=(.+)");
 
+    // 循环遍历提交的参数
     int idx = 0;
     for (idx = 0; idx < args.size(); idx++) {
       String arg = args.get(idx);
       String value = null;
 
+      // 取出配置项和参数值
+      // 如 name为--class,value为"Spark shell"
       Matcher m = eqSeparatedOpt.matcher(arg);
       if (m.matches()) {
         arg = m.group(1);
@@ -150,9 +154,13 @@ class SparkSubmitOptionParser {
       }
 
       // Look for options with a value.
+      // 过滤值为空的
+      // 这里会将参数name与opts常量中的类型进行匹配
       String name = findCliOption(arg, opts);
       if (name != null) {
         if (value == null) {
+          // 如参数只有--class value,size=2,idx=0,size-1=1,说明值不为空
+          // 如果没有值,参数长度size=1,size-1=0,报错
           if (idx == args.size() - 1) {
             throw new IllegalArgumentException(
                 String.format("Missing argument for option '%s'.", arg));

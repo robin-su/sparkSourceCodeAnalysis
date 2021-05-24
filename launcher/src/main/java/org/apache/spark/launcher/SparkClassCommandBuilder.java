@@ -30,8 +30,12 @@ import static org.apache.spark.launcher.CommandBuilderUtils.*;
  * This class handles building the command to launch all internal Spark classes except for
  * SparkSubmit (which is handled by {@link SparkSubmitCommandBuilder} class.
  */
+
+// 构建class命令对象,将class和需要的参数放入对象中
 class SparkClassCommandBuilder extends AbstractCommandBuilder {
 
+  // 这里：classname=org.apache.spark.deploy.master.Master
+  // classArgs=--host --port 7077 --webui-port 8080
   private final String className;
   private final List<String> classArgs;
 
@@ -40,6 +44,7 @@ class SparkClassCommandBuilder extends AbstractCommandBuilder {
     this.classArgs = classArgs;
   }
 
+  // 这是构建执行命令的方法
   @Override
   public List<String> buildCommand(Map<String, String> env)
       throws IOException, IllegalArgumentException {
@@ -47,13 +52,18 @@ class SparkClassCommandBuilder extends AbstractCommandBuilder {
     String memKey = null;
     String extraClassPath = null;
 
+    // 提交的以下class会由这个类解析为对象
     // Master, Worker, HistoryServer, ExternalShuffleService, MesosClusterDispatcher use
     // SPARK_DAEMON_JAVA_OPTS (and specific opts) + SPARK_DAEMON_MEMORY.
     switch (className) {
       case "org.apache.spark.deploy.master.Master":
+        // java类: ../bin/java
         javaOptsKeys.add("SPARK_DAEMON_JAVA_OPTS");
+        // spark类和参数: org.apache.spark.deploy.master.Master --host --port 7077 --webui-port 8080
         javaOptsKeys.add("SPARK_MASTER_OPTS");
+        // 依赖jar包: ../jars/*
         extraClassPath = getenv("SPARK_DAEMON_CLASSPATH");
+        // 执行内存
         memKey = "SPARK_DAEMON_MEMORY";
         break;
       case "org.apache.spark.deploy.worker.Worker":
@@ -91,10 +101,13 @@ class SparkClassCommandBuilder extends AbstractCommandBuilder {
         memKey = "SPARK_DAEMON_MEMORY";
         break;
       default:
+        // 会默认设置为driver内存,默认1G
         memKey = "SPARK_DRIVER_MEMORY";
         break;
     }
 
+
+    // 这里构建了Java执行命令，也就是： .../java -cp
     List<String> cmd = buildJavaCommand(extraClassPath);
 
     for (String key : javaOptsKeys) {
@@ -107,10 +120,14 @@ class SparkClassCommandBuilder extends AbstractCommandBuilder {
       addOptionString(cmd, envValue);
     }
 
+    // 如果driver内存没有设置,这里再设置为前面设置的128m,添加到执行命令中: -Xmx1G
+    // 最终在这里把所有配置和参数加入到执行命令中,完成了执行命令的构建
     String mem = firstNonEmpty(memKey != null ? System.getenv(memKey) : null, DEFAULT_MEM);
     cmd.add("-Xmx" + mem);
     cmd.add(className);
     cmd.addAll(classArgs);
+
+    // 最后将构建的命令返回给spark-class执行
     return cmd;
   }
 
