@@ -48,6 +48,15 @@ class Main {
    * SparkSubmitCommandBuilder、SparkClassCommandBuilder 和 buildCommand。
    *
    * Usage: Main [class] [class args]
+   *  假设Spark Master启动脚本是：
+   *    java \
+   *    -Xmx128m \
+   *    -cp ...\jars\*  \
+   *    org.apache.spark.launcher.Main org.apache.spark.deploy.master.Master \
+   *    --host cdh-master \
+   *    --port 7077 \
+   *    --webui-port 8080
+   *  因为class是org.apache.spark.deploy.master.Master。所有走的是spark-class类型
    * <p>
    * This CLI works in two different modes:
    * <ul>
@@ -63,7 +72,11 @@ class Main {
    * character. On Windows, the output is a command line suitable for direct execution from the
    * script.
    */
+<<<<<<< HEAD
+  // argsArray: org.apache.spark.deploy.master.Master --host cdh-master --port 7077 --webui-port 8080
+=======
   //java -Xmx128m -cp ...\jars\* org.apache.spark.launcher.Main org.apache.spark.deploy.master.Master --host cdh-master --port 7077 --webui-port 8080
+>>>>>>> b22e1ca81731a6b65829a0c49e25749d8319538c
   public static void main(String[] argsArray) throws Exception {
     checkArgument(argsArray.length > 0, "Not enough arguments: missing class name.");
     // Arrays.asList存在的坑：https://javazhiyin.blog.csdn.net/article/details/97207012

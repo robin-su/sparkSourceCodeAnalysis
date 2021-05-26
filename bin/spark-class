@@ -82,6 +82,8 @@ fi
 # 调用执行文件目录下的org.apache.spark.launcher.Main方法
 # 传入执行类及参数,解析后返回参数列表
 build_command() {
+  # 调用执行文件目录下的org.apache.spark.launcher.Main方法
+  # 传入执行类及参数,解析后返回执行命令
   "$RUNNER" -Xmx128m -cp "$LAUNCH_CLASSPATH$LAUNCH_CLASSPATH" org.apache.spark.launcher.Main "$@"
   printf "%d\0" $?
 }
