@@ -84,6 +84,7 @@ private[deploy] class SparkSubmitArguments(args: Seq[String], env: Map[String, S
   var submissionToRequestStatusFor: String = null
   var useRest: Boolean = false // used internally
 
+  // 当前定义的默认文件中读取默认属性。
   /** Default properties present in the currently defined defaults file. */
   lazy val defaultSparkProperties: HashMap[String, String] = {
     val defaultProperties = new HashMap[String, String]()
@@ -91,6 +92,7 @@ private[deploy] class SparkSubmitArguments(args: Seq[String], env: Map[String, S
       logInfo(s"Using properties file: $propertiesFile")
     }
     Option(propertiesFile).foreach { filename =>
+      // 从配置文件中读取配置信息
       val properties = Utils.getPropertiesFromFile(filename)
       properties.foreach { case (k, v) =>
         defaultProperties(k) = v
@@ -120,6 +122,7 @@ private[deploy] class SparkSubmitArguments(args: Seq[String], env: Map[String, S
   validateArguments()
 
   /**
+   * 将默认属性文件中的值与通过--conf指定的值合并。调用此方法时，sparkProperties已被后者的配置填充。
    * Merge values from the default properties file with those specified through --conf.
    * When this is called, `sparkProperties` is already filled with configs from the latter.
    */

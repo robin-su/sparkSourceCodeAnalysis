@@ -225,7 +225,10 @@ private[spark] object Utils extends Logging {
   def getContextOrSparkClassLoader: ClassLoader =
     Option(Thread.currentThread().getContextClassLoader).getOrElse(getSparkClassLoader)
 
-  /** Determines whether the provided class is loadable in the current thread. */
+  /**
+   * 确定所提供的类是否可在当前线程中加载
+   * Determines whether the provided class is loadable in the current thread.
+   */
   def classIsLoadable(clazz: String): Boolean = {
     // scalastyle:off classforname
     Try { Class.forName(clazz, false, getContextOrSparkClassLoader) }.isSuccess

@@ -24,6 +24,8 @@ import java.util.Collections;
 import java.util.Enumeration;
 
 /**
+ * 一个可变的类加载器，在加载类和资源时，它优先于其父类加载器的URL。
+ *
  * A mutable class loader that gives preference to its own URLs over the parent class loader
  * when loading classes and resources.
  */

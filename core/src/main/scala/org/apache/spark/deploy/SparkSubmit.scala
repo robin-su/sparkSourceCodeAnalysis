@@ -335,11 +335,15 @@ private[spark] class SparkSubmit extends Logging {
     val isKubernetesCluster = clusterManager == KUBERNETES && deployMode == CLUSTER
     val isMesosClient = clusterManager == MESOS && deployMode == CLIENT
 
+    // 主要是添加依赖
     if (!isMesosCluster && !isStandAloneCluster) {
       // Resolve maven dependencies if there are any and add classpath to jars. Add them to py-files
       // too for packages that include Python code
       val resolvedMavenCoordinates = DependencyUtils.resolveMavenDependencies(
-        args.packagesExclusions, args.packages, args.repositories, args.ivyRepoPath,
+        args.packagesExclusions,
+        args.packages,
+        args.repositories,
+        args.ivyRepoPath,
         args.ivySettingsPath)
 
       if (!StringUtils.isBlank(resolvedMavenCoordinates)) {
@@ -717,14 +721,17 @@ private[spark] class SparkSubmit extends Logging {
     // yarn-cluster模式,使用yarn.client作为用户提交类的包装执行器
     if (isYarnCluster) {
       childMainClass = YARN_CLUSTER_SUBMIT_CLASS
+      // 若是python语言
       if (args.isPython) {
         childArgs += ("--primary-py-file", args.primaryResource)
         childArgs += ("--class", "org.apache.spark.deploy.PythonRunner")
+      // 若是R语言
       } else if (args.isR) {
         val mainFile = new Path(args.primaryResource).getName
         childArgs += ("--primary-r-file", mainFile)
         childArgs += ("--class", "org.apache.spark.deploy.RRunner")
       } else {
+        // 则是java/ scala
         // 主执行资源不是spark内部资源,就通过--jar把资源添加到子类参数
         if (args.primaryResource != SparkLauncher.NO_RESOURCE) {
           childArgs += ("--jar", args.primaryResource)
@@ -758,6 +765,7 @@ private[spark] class SparkSubmit extends Logging {
       }
     }
 
+    // k8s的方式
     if (isKubernetesCluster) {
       childMainClass = KUBERNETES_CLUSTER_SUBMIT_CLASS
       if (args.primaryResource != SparkLauncher.NO_RESOURCE) {
@@ -875,6 +883,7 @@ private[spark] class SparkSubmit extends Logging {
     val loader =
     // 如果用户设置了class,通过ChildFirstURLClassLoader来加载
       if (sparkConf.get(DRIVER_USER_CLASS_PATH_FIRST)) {
+        // 该类可以摆脱双亲委派机制
         new ChildFirstURLClassLoader(new Array[URL](0),
           Thread.currentThread.getContextClassLoader)
       } else {
@@ -938,7 +947,7 @@ private[spark] class SparkSubmit extends Logging {
     }
 
     try {
-      // 启动实例w
+      // 启动实例 org.apache.spark.deploy.yarn.YarnClusterApplication
       app.start(childArgs.toArray, sparkConf)
     } catch {
       case t: Throwable =>
