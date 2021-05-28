@@ -62,6 +62,7 @@ private[spark] class ClientArguments(args: Array[String]) {
       }
     }
 
+    // pyfile和Rfil不能同时设置
     if (primaryPyFile != null && primaryRFile != null) {
       throw new IllegalArgumentException("Cannot have primary-py-file and primary-r-file" +
         " at the same time")

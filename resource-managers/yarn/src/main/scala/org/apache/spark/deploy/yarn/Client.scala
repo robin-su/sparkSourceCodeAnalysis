@@ -153,12 +153,21 @@ private[spark] class Client(
    * The stable Yarn API provides a convenience method (YarnClient#createApplication) for
    * creating applications and setting up the application submission context. This was not
    * available in the alpha API.
+   *   SparkLauncher 在startApplication方法里通过createBuilder方法调用spark-submit脚本,同时启动LauncherServer服务，
+   *   用于接收LauncherBackend的消息，通过把固定的环境变量通告出去，通知LauncherBackend启动连接LauncherServer。
+   *   spark-submit 脚本调用SparkSubmit，SparkSubmit调用org.apache.spark.deploy.yarn.Client 来提交任务到yarn上。
+   *   yarn.Client 在 submitApplication中启动LauncherBackend 来连接LauncherServer。
+   *   并且在run方法中通过monitorApplication 中来检查app的状态变化，然后通过launcherBackend 把状态变化通知到 launcherServer上
+   *   LauncherServer收到通知后会调用用户提供的listener
    */
   def submitApplication(): ApplicationId = {
     var appId: ApplicationId = null
     try {
+      // 初始化launcherBackend，与launcherBackend建立链接
       launcherBackend.connect()
+      // 初始化 yarnClient
       yarnClient.init(hadoopConf)
+      //  启动yarnClient,链接到集群，获取节点信息
       yarnClient.start()
 
       logInfo("Requesting a new application from cluster with %d NodeManagers"
@@ -1124,6 +1133,8 @@ private[spark] class Client(
   }
 
   /**
+   * 向RM提交app
+   *
    * Submit an application to the ResourceManager.
    * If set spark.yarn.submit.waitAppCompletion to true, it will stay alive
    * reporting the application's status until the application has exited for any reason.
@@ -1132,7 +1143,11 @@ private[spark] class Client(
    * throw an appropriate SparkException.
    */
   def run(): Unit = {
+    // 提交app获取id
+    // spark.yarn.submit.waitAppCompletion设置为true,进程会保存存活并报告app状态,直到app完成
+    // 如果fail,kill级undefined状态退出,会抛出异常
     this.appId = submitApplication()
+    // 监控application的状态
     if (!launcherBackend.isConnected() && fireAndForget) {
       val report = getApplicationReport(appId)
       val state = report.getYarnApplicationState
@@ -1524,9 +1539,11 @@ private[spark] class YarnClusterApplication extends SparkApplication {
   override def start(args: Array[String], conf: SparkConf): Unit = {
     // SparkSubmit would use yarn cache to distribute files & jars in yarn mode,
     // so remove them from sparkConf here for yarn mode.
+    // yarn 模式使用缓存来分发jars和文件，所以移除之前的spark的配置
     conf.remove("spark.jars")
     conf.remove("spark.files")
 
+    // 构建client实例，而首先又构建了ClientArguments实例解析参数
     new Client(new ClientArguments(args), conf).run()
   }
 
