@@ -32,6 +32,12 @@ private[spark] class PartitionPruningRDDPartition(idx: Int, val parentSplit: Par
  * Represents a dependency between the PartitionPruningRDD and its parent. In this
  * case, the child RDD contains a subset of partitions of the parents'.
  */
+
+/**
+ * @param rdd 指向父RDD的实例引用
+ * @param partitionFilterFunc 回调函数，作用是过滤出符合条件的父RDD的partition集合。
+ * @tparam T
+ */
 private[spark] class PruneDependency[T](rdd: RDD[T], partitionFilterFunc: Int => Boolean)
   extends NarrowDependency[T](rdd) {
 

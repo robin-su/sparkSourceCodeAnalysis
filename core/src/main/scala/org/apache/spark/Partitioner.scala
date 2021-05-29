@@ -38,7 +38,9 @@ import org.apache.spark.util.random.SamplingUtils
  * the same partition key.
  */
 abstract class Partitioner extends Serializable {
+  // 返回RDD的partition数量
   def numPartitions: Int
+  // 会根据指定的key返回子RDD的partition index
   def getPartition(key: Any): Int
 }
 
@@ -63,6 +65,7 @@ object Partitioner {
    * We use two method parameters (rdd, others) to enforce callers passing at least 1 RDD.
    */
   def defaultPartitioner(rdd: RDD[_], others: RDD[_]*): Partitioner = {
+
     val rdds = (Seq(rdd) ++ others)
     val hasPartitioner = rdds.filter(_.partitioner.exists(_.numPartitions > 0))
 
@@ -208,14 +211,14 @@ class RangePartitioner[K : Ordering : ClassTag, V](
   def getPartition(key: Any): Int = {
     val k = key.asInstanceOf[K]
     var partition = 0
-    if (rangeBounds.length <= 128) {
+    if (rangeBounds.length <= 128) { // 不大于128分区
       // If we have less than 128 partitions naive search
       while (partition < rangeBounds.length && ordering.gt(k, rangeBounds(partition))) {
         partition += 1
       }
-    } else {
+    } else { // 大与128分区数量
       // Determine which binary search method to use only once.
-      partition = binarySearch(rangeBounds, k)
+      partition = binarySearch(rangeBounds, k) // 二分查找
       // binarySearch either returns the match location or -[insertion point]-1
       if (partition < 0) {
         partition = -partition-1

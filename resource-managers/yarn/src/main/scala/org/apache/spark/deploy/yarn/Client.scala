@@ -169,31 +169,40 @@ private[spark] class Client(
       yarnClient.init(hadoopConf)
       //  启动yarnClient,链接到集群，获取节点信息
       yarnClient.start()
-
+      //
       logInfo("Requesting a new application from cluster with %d NodeManagers"
         .format(yarnClient.getYarnClusterMetrics.getNumNodeManagers))
 
       // Get a new application from our RM
+      // 调用接口向RM创建一个app
       val newApp = yarnClient.createApplication()
+      // 获取请求的响应
       val newAppResponse = newApp.getNewApplicationResponse()
+      // 获取app的id
       appId = newAppResponse.getApplicationId()
 
+      // 建立客户端,用于与hadoop通讯
       new CallerContext("CLIENT", sparkConf.get(APP_CALLER_CONTEXT),
         Option(appId.toString)).setCurrentContext()
 
       // Verify whether the cluster has enough resources for our AM
+      // 验证集群是否有足够的资源运营AM
       verifyClusterResources(newAppResponse)
 
       // Set up the appropriate contexts to launch our AM
+      // 启动Container用于启动AM,并设置环境变量
       val containerContext = createContainerLaunchContext(newAppResponse)
       val appContext = createApplicationSubmissionContext(newApp, containerContext)
 
       // Finally, submit and monitor the application
       logInfo(s"Submitting application $appId to ResourceManager")
+      // 提交app,通过appContext获取资源情况
       yarnClient.submitApplication(appContext)
+      // 监控提交的状况
       launcherBackend.setAppId(appId.toString)
       reportLauncherState(SparkAppHandle.State.SUBMITTED)
 
+      // 返回appId
       appId
     } catch {
       case e: Throwable =>
@@ -861,7 +870,9 @@ private[spark] class Client(
   private def createContainerLaunchContext(newAppResponse: GetNewApplicationResponse)
     : ContainerLaunchContext = {
     logInfo("Setting up container launch context for our AM")
+    // 获取应用id
     val appId = newAppResponse.getApplicationId
+    //
     val appStagingDirPath = new Path(appStagingBaseDir, getAppStagingDir(appId))
     val pySparkArchives =
       if (sparkConf.get(IS_PYTHON_APP)) {

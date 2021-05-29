@@ -42,6 +42,9 @@ abstract class Dependency[T] extends Serializable {
 @DeveloperApi
 abstract class NarrowDependency[T](_rdd: RDD[T]) extends Dependency[T] {
   /**
+   * 根据子RDD的分区，获得父RDD的分区
+   * 从返回值可以看出，一个子RDD的分区可能依赖于多个父RDD的分区。
+   *
    * Get the parent partitions for a child partition.
    * @param partitionId a partition of the child RDD
    * @return the partitions of the parent RDD that the child partition depends upon
@@ -110,17 +113,19 @@ class OneToOneDependency[T](rdd: RDD[T]) extends NarrowDependency[T](rdd) {
 /**
  * :: DeveloperApi ::
  * Represents a one-to-one dependency between ranges of partitions in the parent and child RDDs.
- * @param rdd the parent RDD
- * @param inStart the start of the range in the parent RDD
- * @param outStart the start of the range in the child RDD
- * @param length the length of the range
+ * @param rdd the parent RDD 父RDD
+ * @param inStart the start of the range in the parent RDD 父RDD range的起始位置
+ * @param outStart the start of the range in the child RDD 子RDD range的起始位置
+ * @param length the length of the range range的长度
  */
 @DeveloperApi
 class RangeDependency[T](rdd: RDD[T], inStart: Int, outStart: Int, length: Int)
   extends NarrowDependency[T](rdd) {
 
   override def getParents(partitionId: Int): List[Int] = {
+    // 子rdd分区id 大于等于 子RDD的range其实位置，且小于子rdd分区range起始位置加上range长度
     if (partitionId >= outStart && partitionId < outStart + length) {
+      // （子分区id - 子rdd分区range起始位置）+ 父rdd分区起始位置 = 子分区在子分区range中的起始位置 + 父rdd分区range的起始位置
       List(partitionId - outStart + inStart)
     } else {
       Nil

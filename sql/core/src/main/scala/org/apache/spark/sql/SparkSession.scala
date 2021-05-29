@@ -900,17 +900,21 @@ object SparkSession extends Logging {
      * @since 2.0.0
      */
     def getOrCreate(): SparkSession = synchronized {
+      // 注意，spark session只能 driver端创建
       assertOnDriver()
       // Get the session from current thread's active session.
       var session = activeThreadSession.get()
+      // 若session不为空，且session对应的sparkContext已经停止了，可以使用现有的session
       if ((session ne null) && !session.sparkContext.isStopped) {
         applyModifiableSettings(session)
         return session
       }
 
+      // 给SparkSession加锁，防止重复初始化 session
       // Global synchronization so we will only set the default session once.
       SparkSession.synchronized {
         // If the current thread does not have an active session, get it from the global session.
+        // 若默认session中session存在，且其sparkContext已经停止，也可以使用
         session = defaultSession.get()
         if ((session ne null) && !session.sparkContext.isStopped) {
           applyModifiableSettings(session)
@@ -919,11 +923,13 @@ object SparkSession extends Logging {
 
         // No active nor global default session. Create a new one.
         val sparkContext = userSuppliedContext.getOrElse {
+          // 将配置信息写入到SparkConf
           val sparkConf = new SparkConf()
           options.foreach { case (k, v) => sparkConf.set(k, v) }
 
           // set a random app name if not given.
-          if (!sparkConf.contains("spark.app.name")) {
+          // 若没设置applicaition name,则将其设置为uuid
+          if (!sparkConf.contains("spark.ap\"spark.app.name\"p.name")) {
             sparkConf.setAppName(java.util.UUID.randomUUID().toString)
           }
 
@@ -932,6 +938,7 @@ object SparkSession extends Logging {
         }
 
         // Initialize extensions if the user has defined a configurator class.
+        // spark.sql.extensions 自定义扩展规则
         val extensionConfOption = sparkContext.conf.get(StaticSQLConf.SPARK_SESSION_EXTENSIONS)
         if (extensionConfOption.isDefined) {
           val extensionConfClassName = extensionConfOption.get
@@ -949,14 +956,18 @@ object SparkSession extends Logging {
           }
         }
 
+        // 初始化 SparkSession,并把刚初始化的 SparkContext 传递给它
         session = new SparkSession(sparkContext, None, None, extensions)
         options.foreach { case (k, v) => session.initialSessionOptions.put(k, v) }
+        // 将默认的session设置为当前session
         setDefaultSession(session)
+        // 将活跃的Session设置成当前session
         setActiveSession(session)
 
         // Register a successfully instantiated context to the singleton. This should be at the
         // end of the class definition so that the singleton is updated only if there is no
         // exception in the construction of the instance.
+        // 设置 apark listener ，当application 结束时，default session 重置
         sparkContext.addSparkListener(new SparkListener {
           override def onApplicationEnd(applicationEnd: SparkListenerApplicationEnd): Unit = {
             defaultSession.set(null)
