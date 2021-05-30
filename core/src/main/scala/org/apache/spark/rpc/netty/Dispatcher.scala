@@ -61,7 +61,9 @@ private[netty] class Dispatcher(nettyEnv: NettyRpcEnv, numUsableCores: Int) exte
   private var stopped = false
 
   def registerRpcEndpoint(name: String, endpoint: RpcEndpoint): NettyRpcEndpointRef = {
+    // 初始化RpcEndpointAddress
     val addr = RpcEndpointAddress(nettyEnv.address, name)
+    // 使用Netty
     val endpointRef = new NettyRpcEndpointRef(nettyEnv.conf, addr, nettyEnv)
     synchronized {
       if (stopped) {
@@ -72,6 +74,7 @@ private[netty] class Dispatcher(nettyEnv: NettyRpcEnv, numUsableCores: Int) exte
       }
       val data = endpoints.get(name)
       endpointRefs.put(data.endpoint, data.ref)
+      // 向队列中添加数据，若队列已经满了，则返回false
       receivers.offer(data)  // for the OnStart message
     }
     endpointRef

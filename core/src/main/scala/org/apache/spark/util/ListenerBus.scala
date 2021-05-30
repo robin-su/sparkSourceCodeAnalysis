@@ -32,6 +32,7 @@ import org.apache.spark.internal.Logging
  */
 private[spark] trait ListenerBus[L <: AnyRef, E] extends Logging {
 
+  // 用来保存注册到这个总线上的监听器对象的。
   private[this] val listenersPlusTimers = new CopyOnWriteArrayList[(L, Option[Timer])]
 
   // Marked `private[spark]` for access in tests.

@@ -36,6 +36,7 @@ import org.apache.spark.metrics.source.Source
 
 /**
  * Asynchronously passes SparkListenerEvents to registered SparkListeners.
+ * 异步地将SparkListenerEvent传递给已经注册的SparkListener，这种异步的机制是通过生产消费者模型来实现的。
  *
  * Until `start()` is called, all posted events are only buffered. Only after this listener bus
  * has started will events be actually propagated to all attached listeners. This listener bus

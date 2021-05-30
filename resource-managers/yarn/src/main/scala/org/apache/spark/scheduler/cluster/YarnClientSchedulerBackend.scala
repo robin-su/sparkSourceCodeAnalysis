@@ -42,9 +42,11 @@ private[spark] class YarnClientSchedulerBackend(
    * This waits until the application is running.
    */
   override def start() {
+    // 1.获取driver的host和port
     val driverHost = conf.get("spark.driver.host")
     val driverPort = conf.get("spark.driver.port")
     val hostport = driverHost + ":" + driverPort
+    // 2.设定driver的web ui地址
     sc.ui.foreach { ui => conf.set("spark.driver.appUIAddress", ui.webUrl) }
 
     val argsArrayBuf = new ArrayBuffer[String]()
@@ -53,15 +55,18 @@ private[spark] class YarnClientSchedulerBackend(
     logDebug("ClientArguments called with: " + argsArrayBuf.mkString(" "))
     val args = new ClientArguments(argsArrayBuf.toArray)
     totalExpectedExecutors = SchedulerBackendUtils.getInitialTargetExecutorNumber(conf)
+    // 3.启动deploy client，并初始化driverClient的 Rpc environment，并在该RPC环境中初始化master和driver的rpc endpoint
     client = new Client(args, conf)
+    // 4. 将 application id 绑定到 yarn上
     bindToYarn(client.submitApplication(), None)
 
     // SPARK-8687: Ensure all necessary properties have already been set before
     // we initialize our driver scheduler backend, which serves these properties
     // to the executors
     super.start()
+    // 5. 检查 yarn application的状态，不能为 kill， finished等等
     waitForApplication()
-
+    // 6. 监控线程
     monitorThread = asyncMonitorApplication()
     monitorThread.start()
   }

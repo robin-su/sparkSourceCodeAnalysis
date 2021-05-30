@@ -185,8 +185,10 @@ private[spark] class TaskSchedulerImpl(
   def newTaskId(): Long = nextTaskId.getAndIncrement()
 
   override def start() {
+    // 1.启动task scheduler backend
     backend.start()
 
+    // 2. 设定 speculationScheduler 定时任务
     if (!isLocal && conf.getBoolean("spark.speculation", false)) {
       logInfo("Starting speculative execution thread")
       speculationScheduler.scheduleWithFixedDelay(new Runnable {

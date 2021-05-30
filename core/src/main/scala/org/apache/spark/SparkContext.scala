@@ -512,6 +512,8 @@ class SparkContext(config: SparkConf) extends Logging {
     _taskScheduler = ts
     // 15. 创建DAGScheduler实例
     _dagScheduler = new DAGScheduler(this)
+    //  _heartbeatReceiver 是一个 RpcEndPointRef 对象，其请求最终会被 HeartbeatReceiver（Endpoint）接收并处理。
+    //  即org.apache.spark.HeartbeatReceiver#receiveAndReply方法：
     _heartbeatReceiver.ask[Boolean](TaskSchedulerIsSet)
 
     // start TaskScheduler after taskScheduler sets DAGScheduler reference in DAGScheduler's
@@ -2759,6 +2761,17 @@ object SparkContext extends Logging {
     // When running locally, don't try to re-execute tasks on failure.
     val MAX_LOCAL_TASK_FAILURES = 1
 
+    /**
+     * 模式                                TaskScheduler实现        TaskSchedulerBackend实现
+     * local[N] and local[*]           -> TaskSchedulerImpl    -> LocalSchedulerBackend
+     * local[N,maxRetries]             -> TaskSchedulerImpl    -> LocalSchedulerBackend
+     * local-cluster[N,cores,memory]   -> TaskSchedulerImpl    -> StandaloneSchedulerBackend
+     * spark://(.*)                    -> TaskSchedulerImpl    -> StandaloneSchedulerBackend
+     * yarn-client                     -> YarnScheduler        -> YarnClientSchedulerBackend
+     * yarn-cluster                    -> YarnClusterScheduler -> YarnClusterSchedulerBackend
+     * mesos://(.*)                    -> TaskSchedulerImpl    -> MesosCoarseGrainedSchedulerBackend/MesosFineGrainedSchedulerBackend
+     * k8s                             -> TaskSchedulerImpl    -> KubernetsClusterSchedulerBackend
+     */
     master match {
       case "local" =>
         val scheduler = new TaskSchedulerImpl(sc, MAX_LOCAL_TASK_FAILURES, isLocal = true)
@@ -2815,7 +2828,9 @@ object SparkContext extends Logging {
         }
         (backend, scheduler)
 
+      // yarn-client 模式
       case masterUrl =>
+        // 使用SPI机制获取外部集群管理器
         val cm = getClusterManager(masterUrl) match {
           case Some(clusterMgr) => clusterMgr
           case None => throw new SparkException("Could not parse Master URL: '" + master + "'")
@@ -2835,6 +2850,7 @@ object SparkContext extends Logging {
 
   private def getClusterManager(url: String): Option[ExternalClusterManager] = {
     val loader = Utils.getContextOrSparkClassLoader
+    // SPI机制，获取外部的集群管理
     val serviceLoaders =
       ServiceLoader.load(classOf[ExternalClusterManager], loader).asScala.filter(_.canCreate(url))
     if (serviceLoaders.size > 1) {
