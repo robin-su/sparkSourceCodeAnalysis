@@ -165,6 +165,7 @@ private[netty] class Inbox(
   }
 
   def post(message: InboxMessage): Unit = inbox.synchronized {
+    // 若已经停止
     if (stopped) {
       // We already put "OnStop" into "messages", so we should drop further messages
       onDrop(message)
