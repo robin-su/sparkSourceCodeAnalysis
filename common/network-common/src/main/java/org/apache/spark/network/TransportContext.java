@@ -42,6 +42,13 @@ import org.apache.spark.network.util.TransportConf;
 import org.apache.spark.network.util.TransportFrameDecoder;
 
 /**
+ * 首先这个上下文对象是一个创建TransportServer, TransportClientFactory，使用TransportChannelHandler建立
+ * netty channel pipeline的上下文，这也是它的三个主要功能。TransportClient 提供了两种通信协议：控制层面的RPC
+ * 以及数据层面的 "chunk抓取"。用户通过构造方法传入的 rpcHandler 负责处理RPC 请求。并且 rpcHandler 负责设置流，
+ * 这些流可以使用零拷贝IO以数据块的形式流式传输。
+ *
+ * TransportServer 和 TransportClientFactory 都为每一个channel创建一个 TransportChannelHandler对象。
+ * 每一个TransportChannelHandler 包含一个 TransportClient，这使服务器进程能够在现有通道上将消息发送回客户端。
  * Contains the context to create a {@link TransportServer}, {@link TransportClientFactory}, and to
  * setup Netty Channel pipelines with a
  * {@link org.apache.spark.network.server.TransportChannelHandler}.
@@ -74,7 +81,9 @@ public class TransportContext {
    * RPC to load it and cause to load the non-exist matcher class again. JVM will report
    * `ClassCircularityError` to prevent such infinite recursion. (See SPARK-17714)
    */
+  //网络层数据的加密，MessageEncoder实例
   private static final MessageEncoder ENCODER = MessageEncoder.INSTANCE;
+  //网络层数据的解密，MessageDecoder实例
   private static final MessageDecoder DECODER = MessageDecoder.INSTANCE;
 
   public TransportContext(TransportConf conf, RpcHandler rpcHandler) {

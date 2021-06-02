@@ -41,7 +41,9 @@ private[spark] class BroadcastManager(
   private def initialize() {
     synchronized {
       if (!initialized) {
+        // 实例化TorrentBroadcastFactory
         broadcastFactory = new TorrentBroadcastFactory
+        // 初始化TorrentBroadcastFactory
         broadcastFactory.initialize(isDriver, conf, securityManager)
         initialized = true
       }
@@ -58,10 +60,25 @@ private[spark] class BroadcastManager(
     new ReferenceMap(AbstractReferenceMap.HARD, AbstractReferenceMap.WEAK)
   }
 
+  /**
+   * 实例化TorrentBroadcast类。
+   *
+   * @param value_
+   * @param isLocal
+   * @tparam T
+   * @return
+   */
   def newBroadcast[T: ClassTag](value_ : T, isLocal: Boolean): Broadcast[T] = {
     broadcastFactory.newBroadcast[T](value_, isLocal, nextBroadcastId.getAndIncrement())
   }
 
+  /**
+   * 调用TorrentBroadcast.unpersist方法使广播变量失效
+   *
+   * @param id
+   * @param removeFromDriver
+   * @param blocking
+   */
   def unbroadcast(id: Long, removeFromDriver: Boolean, blocking: Boolean) {
     broadcastFactory.unbroadcast(id, removeFromDriver, blocking)
   }

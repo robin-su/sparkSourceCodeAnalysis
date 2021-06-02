@@ -29,6 +29,8 @@ import org.apache.spark.storage._
 import org.apache.spark.util.io.{ChunkedByteBuffer, ChunkedByteBufferOutputStream}
 
 /**
+ * 它是为各种Spark组件配置序列化，压缩和加密的组件，包括自动选择用于shuffle的Serializer。
+ * spark中的数据在network IO 或 local disk IO传输过程中。都需要序列化。其默认的 Serializer
  * Component which configures serialization, compression and encryption for various Spark
  * components, including automatic selection of which [[Serializer]] to use for shuffles.
  */
@@ -84,6 +86,7 @@ private[spark] class SerializerManager(
     primitiveAndPrimitiveArrayClassTags.contains(ct) || ct == stringClassTag
   }
 
+  // 单个值序列化
   // SPARK-18617: As feature in SPARK-13990 can not be applied to Spark Streaming now. The worst
   // result is streaming job based on `Receiver` mode can not run on Spark 2.x properly. It may be
   // a rational choice to close `kryo auto pick` feature for streaming in the first step.
@@ -96,6 +99,7 @@ private[spark] class SerializerManager(
   }
 
   /**
+   * 用于键值对序列化
    * Pick the best serializer for shuffling an RDD of key-value pairs.
    */
   def getSerializer(keyClassTag: ClassTag[_], valueClassTag: ClassTag[_]): Serializer = {

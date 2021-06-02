@@ -52,6 +52,7 @@ private[netty] case class RemoteProcessConnectionError(cause: Throwable, remoteA
   extends InboxMessage
 
 /**
+ * 它为RpcEndpoint 对象保存了消息，并且将消息 post给 RpcEndpoint，同时保证了线程的安全性。
  * An inbox that stores messages for an [[RpcEndpoint]] and posts messages to it thread-safely.
  */
 private[netty] class Inbox(
@@ -90,6 +91,7 @@ private[netty] class Inbox(
       if (!enableConcurrent && numActiveThreads != 0) {
         return
       }
+      // 从队列头部获取消息
       message = messages.poll()
       if (message != null) {
         numActiveThreads += 1
@@ -170,6 +172,7 @@ private[netty] class Inbox(
       // We already put "OnStop" into "messages", so we should drop further messages
       onDrop(message)
     } else {
+      // 往消息队列中发送消息
       messages.add(message)
       false
     }

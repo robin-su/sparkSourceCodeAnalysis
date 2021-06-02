@@ -31,6 +31,10 @@ import org.apache.spark.rpc._
 import org.apache.spark.util.ThreadUtils
 
 /**
+ * Dispatcher 是消息的分发器，负责将消息分发给适合的 endpoint
+   抽象出来 Inbox 的原因在于，Diapatcher 的职责变得单一，只需要把数据分发就可以了。
+   具体分发数据要如何处理的问题留给了 Inbox，Inbox 把关注点放在了 如何处理这些消息上。
+   考虑并解决了 一次性批量处理消息问题、多线程安全问题、异常抛出问题，多消息分支处理问题等等问题。
  * A message dispatcher, responsible for routing RPC messages to the appropriate endpoint(s).
  *
  * @param numUsableCores Number of CPU cores allocated to the process, for sizing the thread pool.
@@ -111,7 +115,9 @@ private[netty] class Dispatcher(nettyEnv: NettyRpcEnv, numUsableCores: Int) exte
     // 1.移除EndpointData
     val data = endpoints.remove(name)
     if (data != null) {
+      // 停止inbox
       data.inbox.stop()
+      // 放入OnStop
       receivers.offer(data)  // for the OnStop message
     }
     // Don't clean `endpointRefs` here because it's possible that some messages are being processed
