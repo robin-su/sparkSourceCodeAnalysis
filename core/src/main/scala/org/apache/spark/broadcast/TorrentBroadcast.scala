@@ -34,18 +34,25 @@ import org.apache.spark.util.Utils
 import org.apache.spark.util.io.{ChunkedByteBuffer, ChunkedByteBufferOutputStream}
 
 /**
+ * 广播变量一种类BitTorrent的实现方式
  * A BitTorrent-like implementation of [[org.apache.spark.broadcast.Broadcast]].
  *
+ * 以下是广播变量的描述：
  * The mechanism is as follows:
  *
+ * driver会将序列化对象拆分成多个小小的块(chunks)，并将这些小块保存到Driver端的BlockManager中
  * The driver divides the serialized object into small chunks and
  * stores those chunks in the BlockManager of the driver.
  *
+ * 对于每个Executor，它首先尝试从自己的BlockManager中获取数据，若在它不存在，则它会向处在远端可达的Driver或者其他Executor
+ * 抓取数据，一旦它抓取到数据块，它就会将其放到自己的BlockManager中，其他executor也可以从它这里抓取数据
  * On each executor, the executor first attempts to fetch the object from its BlockManager. If
  * it does not exist, it then uses remote fetches to fetch the small chunks from the driver and/or
  * other executors if available. Once it gets the chunks, it puts the chunks in its own
  * BlockManager, ready for other executors to fetch from.
  *
+ * 这种机制可以防止Driver端向每个Executor段发送副本锁带来的性能瓶劲。（即每个executor主动拉去，而不是Driver发送）
+ * 在超大规模集群模式下，能有效的防止Driver发送过多的Executor所带来的瓶劲
  * This prevents the driver from being the bottleneck in sending out multiple copies of the
  * broadcast data (one per executor).
  *
@@ -58,6 +65,9 @@ private[spark] class TorrentBroadcast[T: ClassTag](obj: T, id: Long)
   extends Broadcast[T](id) with Logging with Serializable {
 
   /**
+   * executor中广播变量的值，通过readBroadcastBlock方法进行重建，通过从Driver或者Executors中读取blocks来构建value.
+   * 对于Driver，若需要广播变量，则以延迟读取的方式从块管理器（BlockManager）中读取。
+   *
    * Value of the broadcast object on executors. This is reconstructed by [[readBroadcastBlock]],
    * which builds this value by reading blocks from the driver and/or other executors.
    *
@@ -65,8 +75,11 @@ private[spark] class TorrentBroadcast[T: ClassTag](obj: T, id: Long)
    */
   @transient private lazy val _value: T = readBroadcastBlock()
 
+  /** 广播变量的压缩方式，若为None，则说明不需要压缩广播变量 **/
   /** The compression codec to use, or None if compression is disabled */
   @transient private var compressionCodec: Option[CompressionCodec] = _
+
+  /** block块的大小，模式是4MB，该变量仅仅被广播者锁读取 **/
   /** Size of each block. Default value is 4MB.  This value is only read by the broadcaster. */
   @transient private var blockSize: Int = _
 
@@ -84,6 +97,9 @@ private[spark] class TorrentBroadcast[T: ClassTag](obj: T, id: Long)
 
   private val broadcastId = BroadcastBlockId(id)
 
+  /**
+   * blocks块的数量
+   */
   /** Total number of blocks this broadcast variable contains. */
   private val numBlocks: Int = writeBlocks(obj)
 
@@ -110,6 +126,7 @@ private[spark] class TorrentBroadcast[T: ClassTag](obj: T, id: Long)
   }
 
   /**
+   * 将对象分割成许多块(blocks),并将其存储到block manager中
    * Divide the object into multiple blocks and put those blocks in the block manager.
    *
    * @param value the object to divide

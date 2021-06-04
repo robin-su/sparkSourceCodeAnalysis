@@ -37,6 +37,9 @@ private[spark] class BroadcastManager(
 
   initialize()
 
+  /**
+   * 在使用广播变量前会被SparkContext和Executor调用
+   */
   // Called by SparkContext or Executor before using Broadcast
   private def initialize() {
     synchronized {

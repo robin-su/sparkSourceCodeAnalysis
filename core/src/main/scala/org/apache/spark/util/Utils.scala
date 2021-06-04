@@ -2498,6 +2498,7 @@ private[spark] object Utils extends Logging {
 
 
   /**
+   * 判断是否为local模式
    *
    * @return whether it is local mode
    */
