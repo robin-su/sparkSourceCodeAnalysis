@@ -280,6 +280,7 @@ private[spark] class MemoryStore(
   }
 
   /**
+   * 尝试将给定的块作为值放入内存中。
    * Attempt to put the given block in memory store as values.
    *
    * @return in case of success, the estimated size of the stored data. In case of failure, return

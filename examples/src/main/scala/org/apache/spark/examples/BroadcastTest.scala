@@ -28,6 +28,7 @@ object BroadcastTest {
 
     val blockSize = if (args.length > 2) args(2) else "4096"
 
+    // 构建SparkSession变量
     val spark = SparkSession
       .builder()
       .appName("Broadcast Test")

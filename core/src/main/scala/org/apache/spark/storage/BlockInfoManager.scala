@@ -166,6 +166,9 @@ private[storage] class BlockInfoManager extends Logging {
   }
 
   /**
+   * 在数据块上加上读锁，并返回其元数据，如果另一个任务已经锁定了这个块进行读取，那么读取锁将立即授予调用任务，并且它的锁计数将增加。
+   * 如果另一个任务已锁定此块以进行写入，则此调用将阻塞，直到写入锁定被释放或如果阻塞 = false 将立即返回。
+     单个任务可以多次锁定一个块进行读取，在这种情况下，每个锁都需要单独释放。
    * Lock a block for reading and return its metadata.
    *
    * If another task has already locked this block for reading, then the read lock will be

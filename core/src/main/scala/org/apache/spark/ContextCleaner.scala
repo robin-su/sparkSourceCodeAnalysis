@@ -159,7 +159,10 @@ private[spark] class ContextCleaner(sc: SparkContext) extends Logging {
     registerForCleanup(shuffleDependency, CleanShuffle(shuffleDependency.shuffleId))
   }
 
-  /** Register a Broadcast for cleanup when it is garbage collected. */
+  /**
+   * 注册广播以在垃圾收集时进行清理。
+   * Register a Broadcast for cleanup when it is garbage collected.
+   */
   def registerBroadcastForCleanup[T](broadcast: Broadcast[T]): Unit = {
     registerForCleanup(broadcast, CleanBroadcast(broadcast.id))
   }
@@ -169,7 +172,8 @@ private[spark] class ContextCleaner(sc: SparkContext) extends Logging {
     registerForCleanup(rdd, CleanCheckpoint(parentId))
   }
 
-  /** Register an object for cleanup. */
+  /** Register an object for cleanup.
+   *  这里广播变量被注册成弱引用，当对象弱可达时，就会被被垃圾回收器回收 */
   private def registerForCleanup(objectForCleanup: AnyRef, task: CleanupTask): Unit = {
     referenceBuffer.add(new CleanupTaskWeakReference(task, objectForCleanup, referenceQueue))
   }

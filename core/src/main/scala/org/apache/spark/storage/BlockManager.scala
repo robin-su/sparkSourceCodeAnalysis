@@ -632,8 +632,13 @@ private[spark] class BlockManager(
    */
   def getLocalBytes(blockId: BlockId): Option[BlockData] = {
     logDebug(s"Getting local block $blockId as bytes")
-    // As an optimization for map output fetches, if the block is for a shuffle, return it
-    // without acquiring a lock; the disk store never deletes (recent) items so this should work
+
+    /**
+     * 作为 map 输出获取的优化，如果块是用于 shuffle，则返回它
+     * 无需获取锁；磁盘存储永远不会删除（最近的）项目，所以这应该有效
+     */
+    //     As an optimization for map output fetches, if the block is for a shuffle, return it
+//     without acquiring a lock; the disk store never deletes (recent) items so this should work
     if (blockId.isShuffle) {
       val shuffleBlockResolver = shuffleManager.shuffleBlockResolver
       // TODO: This should gracefully handle case where local block is not available. Currently
@@ -701,6 +706,7 @@ private[spark] class BlockManager(
   }
 
   /**
+   * 返回给定块的位置列表，优先考虑本地机器，因为多个块管理器可以共享同一主机，其次是同一机架上的主机。
    * Return a list of locations for the given block, prioritizing the local machine since
    * multiple block managers can share the same host, followed by hosts on the same rack.
    */
@@ -730,6 +736,7 @@ private[spark] class BlockManager(
     var runningFailureCount = 0
     var totalFailureCount = 0
 
+    // 因为所有的远端的块都会在driver中注册，因此无需询问所有远端的executor以获取块的状态
     // Because all the remote blocks are registered in driver, it is not necessary to ask
     // all the slave executors to get block status.
     val locationsAndStatus = master.getLocationsAndStatus(blockId)
@@ -738,15 +745,21 @@ private[spark] class BlockManager(
     }.getOrElse(0L)
     val blockLocations = locationsAndStatus.map(_.locations).getOrElse(Seq.empty)
 
-    // If the block size is above the threshold, we should pass our FileManger to
-    // BlockTransferService, which will leverage it to spill the block; if not, then passed-in
-    // null value means the block will be persisted in memory.
+    /**
+     * 如果块大小高于阈值，我们应该将我们的 FileManger 传递给
+     BlockTransferService，它将利用它来溢出块；如果没有，则传入
+     null 值意味着该块将被持久化在内存中。
+     */
+    //     If the block size is above the threshold, we should pass our FileManger to
+//     BlockTransferService, which will leverage it to spill the block; if not, then passed-in
+//     null value means the block will be persisted in memory.
     val tempFileManager = if (blockSize > maxRemoteBlockToMem) {
       remoteBlockTempFileManager
     } else {
       null
     }
 
+    // 返回给定块的位置列表，优先考虑本地机器，因为多个块管理器可以共享同一主机，其次是同一机架上的主机。
     val locations = sortLocations(blockLocations)
     val maxFetchFailures = locations.size
     var locationIterator = locations.iterator
@@ -1135,9 +1148,10 @@ private[spark] class BlockManager(
   }
 
   /**
+   * 根据给定级别将给定块放入块存储之一，如有必要，复制值。
    * Put the given block according to the given level in one of the block stores, replicating
    * the values if necessary.
-   *
+   * 如果块已经存在，则此方法不会覆盖它。
    * If the block already exists, this method will not overwrite it.
    *
    * @param keepReadLock if true, this method will hold the read lock when it returns (even if the
@@ -1159,7 +1173,9 @@ private[spark] class BlockManager(
       // Size of the block in bytes
       var size = 0L
       if (level.useMemory) {
+        // 先把它放在内存中，即使 useDisk 已经被设置为 true；
         // Put it in memory first, even if it also has useDisk set to true;
+        // 如果内存存储无法容纳它，我们稍后会将它放到磁盘上。
         // We will drop it to disk later if the memory store can't hold it.
         if (level.deserialized) {
           memoryStore.putIteratorAsValues(blockId, iterator(), classTag) match {

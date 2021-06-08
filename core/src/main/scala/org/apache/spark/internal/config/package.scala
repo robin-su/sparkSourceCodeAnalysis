@@ -301,6 +301,7 @@ package object config {
     .stringConf
     .createWithDefault(Utils.localCanonicalHostName())
 
+  // 在驱动程序上绑定网络侦听套接字的地址。
   private[spark] val DRIVER_BIND_ADDRESS = ConfigBuilder("spark.driver.bindAddress")
     .doc("Address where to bind network listen sockets on the driver.")
     .fallbackConf(DRIVER_HOST_ADDRESS)

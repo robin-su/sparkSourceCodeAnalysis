@@ -46,7 +46,7 @@ private[spark] class BroadcastManager(
       if (!initialized) {
         // 实例化TorrentBroadcastFactory
         broadcastFactory = new TorrentBroadcastFactory
-        // 初始化TorrentBroadcastFactory
+        // 初始化TorrentBroadcastFactory，其实什么都没干
         broadcastFactory.initialize(isDriver, conf, securityManager)
         initialized = true
       }
