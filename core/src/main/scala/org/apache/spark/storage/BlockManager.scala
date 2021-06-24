@@ -1498,6 +1498,11 @@ private[spark] class BlockManager(
   }
 
   /**
+   *
+   * 从内存中删除一个块，如果适用，可能会将其放在磁盘上。当内存存储达到其限制并需要释放空间时调用。
+     如果数据没有放在磁盘上，它就不会被创建。
+     此方法的调用者必须在调用此方法之前对块持有写锁。此方法不会释放写锁。
+
    * Drop a block from memory, possibly putting it on disk if applicable. Called when the memory
    * store reaches its limit and needs to free up space.
    *
@@ -1534,7 +1539,7 @@ private[spark] class BlockManager(
       blockIsUpdated = true
     }
 
-    // Actually drop from memory store
+    // Actually drop from memory store 实际上从内存存储中删除
     val droppedMemorySize =
       if (memoryStore.contains(blockId)) memoryStore.getSize(blockId) else 0L
     val blockIsRemoved = memoryStore.remove(blockId)

@@ -43,26 +43,39 @@ private[spark] abstract class MemoryManager(
 
   // -- Methods related to memory allocation policies and bookkeeping ------------------------------
 
+  // 堆内内存缓存池
   @GuardedBy("this")
   protected val onHeapStorageMemoryPool = new StorageMemoryPool(this, MemoryMode.ON_HEAP)
+  // 堆外内存缓存池
   @GuardedBy("this")
   protected val offHeapStorageMemoryPool = new StorageMemoryPool(this, MemoryMode.OFF_HEAP)
+  // 堆内内存执行池
   @GuardedBy("this")
   protected val onHeapExecutionMemoryPool = new ExecutionMemoryPool(this, MemoryMode.ON_HEAP)
+  // 堆外内存执行池
   @GuardedBy("this")
   protected val offHeapExecutionMemoryPool = new ExecutionMemoryPool(this, MemoryMode.OFF_HEAP)
 
+  // 扩展堆内内存连接池
   onHeapStorageMemoryPool.incrementPoolSize(onHeapStorageMemory)
+  // 拓展堆内内存执行池
   onHeapExecutionMemoryPool.incrementPoolSize(onHeapExecutionMemory)
 
+  // 从配置文件中获取最大堆外可用内存
   protected[this] val maxOffHeapMemory = conf.get(MEMORY_OFFHEAP_SIZE)
+  // 默认情况下 堆外内存和堆内内存比例是：1：1，各占50%
   protected[this] val offHeapStorageMemory =
     (maxOffHeapMemory * conf.getDouble("spark.memory.storageFraction", 0.5)).toLong
 
+  // 拓展堆外内存执行池的内存，为堆外最大可用内存- 堆外内粗缓存池内存，这里很明显是50%
   offHeapExecutionMemoryPool.incrementPoolSize(maxOffHeapMemory - offHeapStorageMemory)
+  // 拓展堆外内存缓存池的内存
   offHeapStorageMemoryPool.incrementPoolSize(offHeapStorageMemory)
 
   /**
+   * 可用于存储的堆内存总量，以字节为单位。这个数量会随着时间的推移而变化，具体取决于 MemoryManager 的实现。
+   * 在这个模型中，这相当于没有被执行占用的内存量。
+   *
    * Total available on heap memory for storage, in bytes. This amount can vary over time,
    * depending on the MemoryManager implementation.
    * In this model, this is equivalent to the amount of memory not occupied by execution.
@@ -70,12 +83,14 @@ private[spark] abstract class MemoryManager(
   def maxOnHeapStorageMemory: Long
 
   /**
+   * 用于存储的可用堆外内存总量，以字节为单位。这个数量会随着时间的推移而变化，具体取决于 MemoryManager 的实现。
    * Total available off heap memory for storage, in bytes. This amount can vary over time,
    * depending on the MemoryManager implementation.
    */
   def maxOffHeapStorageMemory: Long
 
   /**
+   * 设置此管理器使用的 MemoryStore 以驱逐缓存块。由于初始化顺序限制，这必须在构造后设置
    * Set the [[MemoryStore]] used by this manager to evict cached blocks.
    * This must be set after construction due to initialization ordering constraints.
    */
@@ -85,6 +100,7 @@ private[spark] abstract class MemoryManager(
   }
 
   /**
+   * 获取 N 字节的内存来缓存给定的块，必要时驱逐现有的块。
    * Acquire N bytes of memory to cache the given block, evicting existing ones if necessary.
    *
    * @return whether all N bytes were successfully granted.
@@ -92,6 +108,10 @@ private[spark] abstract class MemoryManager(
   def acquireStorageMemory(blockId: BlockId, numBytes: Long, memoryMode: MemoryMode): Boolean
 
   /**
+   * 获取 N 字节的内存来展开给定的块，必要时驱逐现有的块。
+     这个额外的方法允许子类区分获取存储内存和获取展开内存之间的行为。例如，Spark 1.5 及之前版本中的内存管理模型限制了可以从展开中释放的空间量。
+     返回：
+     是否所有 N 个字节都被成功授予。
    * Acquire N bytes of memory to unroll the given block, evicting existing ones if necessary.
    *
    * This extra method allows subclasses to differentiate behavior between acquiring storage
@@ -103,6 +123,10 @@ private[spark] abstract class MemoryManager(
   def acquireUnrollMemory(blockId: BlockId, numBytes: Long, memoryMode: MemoryMode): Boolean
 
   /**
+   * 尝试为当前任务获取最多 numBytes 的执行内存并返回获取的字节数，如果无法分配则返回 0。
+    在某些情况下，此调用可能会阻塞，直到有足够的可用内存，以确保每个任务在强制执行之前都有机会增加到总内存池的至少 1 / 2N（其中 N 是活动任务的数量）溢出。
+    如果任务数量增加但较旧的任务已经有很多内存，就会发生这种情况。
+   *
    * Try to acquire up to `numBytes` of execution memory for the current task and return the
    * number of bytes obtained, or 0 if none can be allocated.
    *
@@ -118,6 +142,7 @@ private[spark] abstract class MemoryManager(
       memoryMode: MemoryMode): Long
 
   /**
+   * 释放属于给定任务的 numBytes 执行内存。
    * Release numBytes of execution memory belonging to the given task.
    */
   private[memory]
@@ -132,16 +157,24 @@ private[spark] abstract class MemoryManager(
   }
 
   /**
+   * 释放执行内存
+   * 释放给定任务的所有内存并将其标记为非活动（例如，当任务结束时）。
+     返回：
+     释放的字节数。
+   *
    * Release all memory for the given task and mark it as inactive (e.g. when a task ends).
    *
    * @return the number of bytes freed.
    */
   private[memory] def releaseAllExecutionMemoryForTask(taskAttemptId: Long): Long = synchronized {
+    // 释放堆内执行内存池的内存 + 释放堆外执行内存池的内存
     onHeapExecutionMemoryPool.releaseAllMemoryForTask(taskAttemptId) +
       offHeapExecutionMemoryPool.releaseAllMemoryForTask(taskAttemptId)
   }
 
   /**
+   * 释放缓存内存
+   *
    * Release N bytes of storage memory.
    */
   def releaseStorageMemory(numBytes: Long, memoryMode: MemoryMode): Unit = synchronized {
@@ -152,6 +185,7 @@ private[spark] abstract class MemoryManager(
   }
 
   /**
+   * 释放所有的存储内存
    * Release all storage memory acquired.
    */
   final def releaseAllStorageMemory(): Unit = synchronized {
@@ -160,6 +194,7 @@ private[spark] abstract class MemoryManager(
   }
 
   /**
+   * 释放 N 字节的展开内存。
    * Release N bytes of unroll memory.
    */
   final def releaseUnrollMemory(numBytes: Long, memoryMode: MemoryMode): Unit = synchronized {
@@ -167,6 +202,7 @@ private[spark] abstract class MemoryManager(
   }
 
   /**
+   * 当前使用的执行内存，以字节为单位。
    * Execution memory currently in use, in bytes.
    */
   final def executionMemoryUsed: Long = synchronized {
@@ -174,6 +210,7 @@ private[spark] abstract class MemoryManager(
   }
 
   /**
+   * 当前使用的存储内存，以字节为单位。
    * Storage memory currently in use, in bytes.
    */
   final def storageMemoryUsed: Long = synchronized {
@@ -181,6 +218,7 @@ private[spark] abstract class MemoryManager(
   }
 
   /**
+   * 返回给定任务的执行内存消耗（以字节为单位）。
    * Returns the execution memory consumption, in bytes, for the given task.
    */
   private[memory] def getExecutionMemoryUsageForTask(taskAttemptId: Long): Long = synchronized {

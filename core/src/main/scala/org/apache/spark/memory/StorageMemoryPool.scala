@@ -77,6 +77,7 @@ private[memory] class StorageMemoryPool(
    * @return whether all N bytes were successfully granted.
    */
   def acquireMemory(blockId: BlockId, numBytes: Long): Boolean = lock.synchronized {
+    // 若想要的内存大于空闲内存，则需要驱逐内存
     val numBytesToFree = math.max(0, numBytes - memoryFree)
     acquireMemory(blockId, numBytes, numBytesToFree)
   }

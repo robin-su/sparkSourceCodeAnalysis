@@ -147,6 +147,7 @@ private[memory] class ExecutionMemoryPool(
   }
 
   /**
+   * 释放给定任务获取的`numBytes` 内存。
    * Release `numBytes` of memory acquired by the given task.
    */
   def releaseMemory(numBytes: Long, taskAttemptId: Long): Unit = lock.synchronized {
@@ -165,6 +166,7 @@ private[memory] class ExecutionMemoryPool(
         memoryForTask.remove(taskAttemptId)
       }
     }
+    // 通知其他的消费者，内存已经释放
     lock.notifyAll() // Notify waiters in acquireMemory() that memory has been freed
   }
 

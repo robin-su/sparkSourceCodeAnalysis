@@ -30,6 +30,7 @@ import org.apache.spark.internal.Logging
 
 
 /**
+ * 跟踪单个块的元数据。
  * Tracks metadata for an individual block.
  *
  * Instances of this class are _not_ thread-safe and are protected by locks in the
@@ -48,6 +49,7 @@ private[storage] class BlockInfo(
     val tellMaster: Boolean) {
 
   /**
+   * 块大小：单位字节
    * The size of the block (in bytes)
    */
   def size: Long = _size
@@ -58,6 +60,7 @@ private[storage] class BlockInfo(
   private[this] var _size: Long = 0
 
   /**
+   * 此块已被锁定以进行读取的次数。
    * The number of times that this block has been locked for reading.
    */
   def readerCount: Int = _readerCount
@@ -68,6 +71,7 @@ private[storage] class BlockInfo(
   private[this] var _readerCount: Int = 0
 
   /**
+   * 当前持有此块写锁的任务的任务尝试 id，或者 BlockInfo.NON_TASK_WRITER 如果写锁由非任务代码持有，或者 BlockInfo.NO_WRITER 如果此块未锁定写入
    * The task attempt id of the task which currently holds the write lock for this block, or
    * [[BlockInfo.NON_TASK_WRITER]] if the write lock is held by non-task code, or
    * [[BlockInfo.NO_WRITER]] if this block is not locked for writing.
@@ -92,6 +96,7 @@ private[storage] class BlockInfo(
 private[storage] object BlockInfo {
 
   /**
+   * 用于将块的写锁标记为已解锁的特殊任务尝试 ID 常量。
    * Special task attempt id constant used to mark a block's write lock as being unlocked.
    */
   val NO_WRITER: Long = -1
@@ -209,6 +214,9 @@ private[storage] class BlockInfoManager extends Logging {
   }
 
   /**
+   * 锁定块以进行写入并返回其元数据。
+     如果另一个任务已经为读或写锁定了这个块，那么这个调用将阻塞直到其他锁被释放或者如果阻塞 = false 将立即返回。
+
    * Lock a block for writing and return its metadata.
    *
    * If another task has already locked this block for either reading or writing, then this call
