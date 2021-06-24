@@ -57,8 +57,21 @@ private case class SerializedMemoryEntry[T](
   def size: Long = buffer.size
 }
 
+/**
+ * RDD 在缓存到内存之前，Partition 中的数据一般以迭代器( Iterator )的数据结构来访问，
+ * 通过 Iterator 可以获得分区中每一条序列化或者非序列化的 Record，这些Record在访问的时候占用的是 JVM 堆内存中 other 部分的内存区域，
+ * 同一个Partition 的不同 Record 的空间并不是连续的。RDD 被缓存之后，会由 Partition 转化为 Block，并且存储位置变为了 Storage Memory 区域，
+ * 此时 Block 中的 Record 所占用的内存空间是连续的。Unroll 意思是展开，在 Spark 当中的意义就是将存储在 Partition 中的 Record 由
+ * 不连续的存储空间转换为连续存储空间的过程。Unroll 操作的时候需要在 Storage Memory 当中通过reserveUnrollMemoryForThisTask来申请
+ * Unroll 操作所需要的内存，使用完毕之后，又通过releaseUnrollMemoryForThisTask方法来释放这部分内存。因为不能保证存储空间可以一次容纳 Iterator
+ * 中的所有数据，当前的计算任务在 Unroll 时要向 MemoryManager 申请足够的 Unroll 空间来临时占位，空间不足则 Unroll 失败，空间足够时可以继续进行。
+ * Unroll 并不是一下子把数据展开到内存，而是分布进行，在每步中都先检查内存是否足够，如果内存不足，则尝试将内存中的数据写入磁盘，释放空间存放新写入的数据，
+ * 当计算释放空间足够时，则把内存中释放的数据写入到磁盘并返回内存足够的结果，而当计算出释放所有空间都不足时，则返回内存不足的结果。
+ */
 private[storage] trait BlockEvictionHandler {
   /**
+   *
+   *
    * Drop a block from memory, possibly putting it on disk if applicable. Called when the memory
    * store reaches its limit and needs to free up space.
    *
@@ -75,6 +88,7 @@ private[storage] trait BlockEvictionHandler {
 }
 
 /**
+ * 在内存中存储blocks(块)，可能是java的序列化对象也可能是序列化的字节缓存
  * Stores blocks in memory, either as Arrays of deserialized Java objects or as
  * serialized ByteBuffers.
  */
@@ -86,23 +100,32 @@ private[spark] class MemoryStore(
     blockEvictionHandler: BlockEvictionHandler)
   extends Logging {
 
+  /**
+   * 注意：对内存分配的所有更改，特别是放入块、驱逐块以及获取或释放展开内存，都必须在 `memoryManager` 上同步！
+   */
   // Note: all changes to memory allocations, notably putting blocks, evicting blocks, and
   // acquiring or releasing unroll memory, must be synchronized on `memoryManager`!
 
   private val entries = new LinkedHashMap[BlockId, MemoryEntry[_]](32, 0.75f, true)
 
-  // A mapping from taskAttemptId to amount of memory used for unrolling a block (in bytes)
+  // taskAttemptId 表示申请内存的 task id
+  // A mapping from taskAttemptId to amount of memory used for  a bunrollinglock (in bytes)
   // All accesses of this map are assumed to have manually synchronized on `memoryManager`
+  // 堆内内存，key为申请内存的task id,value为申请的字节数大小
   private val onHeapUnrollMemoryMap = mutable.HashMap[Long, Long]()
+
+  // 注意：堆外展开内存仅在 putIteratorAsBytes() 中使用，因为堆外缓存始终存储序列化值。
   // Note: off-heap unroll memory is only used in putIteratorAsBytes() because off-heap caching
   // always stores serialized values.
   private val offHeapUnrollMemoryMap = mutable.HashMap[Long, Long]()
 
+  // 在展开任何块之前请求的初始内存,默认是1M
   // Initial memory to request before unrolling any block
   private val unrollMemoryThreshold: Long =
     conf.getLong("spark.storage.unrollMemoryThreshold", 1024 * 1024)
 
-  /** Total amount of memory available for storage, in bytes. */
+  /** 可用于存储的内存总量，以字节为单位。
+   * Total amount of memory available for storage, in bytes. */
   private def maxMemory: Long = {
     memoryManager.maxOnHeapStorageMemory + memoryManager.maxOffHeapStorageMemory
   }
@@ -115,14 +138,18 @@ private[spark] class MemoryStore(
 
   logInfo("MemoryStore started with capacity %s".format(Utils.bytesToString(maxMemory)))
 
+  // 使用的总存储内存，包括unroll内存，以字节为单位
   /** Total storage memory used including unroll memory, in bytes. */
   private def memoryUsed: Long = memoryManager.storageMemoryUsed
 
   /**
+   * 用于缓存块的存储内存量（以字节为单位）。这不包括用于untroll的内存。
+   * Storage内存的作用是：缓存RDD和广播变量，主要是以缓存RDD为主
    * Amount of storage memory, in bytes, used for caching blocks.
    * This does not include memory used for unrolling.
    */
   private def blocksMemoryUsed: Long = memoryManager.synchronized {
+    // Storage - 已经展开的内存，剩下的就是可以用于缓存block的内存
     memoryUsed - currentUnrollMemory
   }
 
@@ -133,6 +160,10 @@ private[spark] class MemoryStore(
   }
 
   /**
+   * 使用 size 来测试 MemoryStore 中是否有足够的空间。如果是，则创建 ByteBuffer 并将其放入 MemoryStore。否则，将不会创建 ByteBuffer。
+     调用者应保证大小正确。
+     返回：
+     如果 put() 成功，则为 true，否则为 false。
    * Use `size` to test if there is enough space in MemoryStore. If so, create the ByteBuffer and
    * put it into MemoryStore. Otherwise, the ByteBuffer won't be created.
    *
@@ -163,6 +194,10 @@ private[spark] class MemoryStore(
   }
 
   /**
+   * 尝试将给定的块作为值或字节放入内存中。
+     迭代器可能太大而无法在内存中实现和存储。为了避免OOM异常，这个方法会在周期性的检查是否有足够的空闲内存的同时，逐步展开迭代器。
+     如果块成功实现，那么在实现过程中使用的临时展开内存将“转移”到存储内存，因此我们不会获得比存储块实际所需的更多内存。
+
    * Attempt to put the given block in memory store as values or bytes.
    *
    * It's possible that the iterator is too large to materialize and store in memory. To avoid
@@ -191,22 +226,22 @@ private[spark] class MemoryStore(
       valuesHolder: ValuesHolder[T]): Either[Long, Long] = {
     require(!contains(blockId), s"Block $blockId is already present in the MemoryStore")
 
-    // Number of elements unrolled so far
+    // Number of elements unrolled so far // 目前为止，到目前为止展开的unrolled的元素数
     var elementsUnrolled = 0
-    // Whether there is still enough memory for us to continue unrolling this block
+    // Whether there is still enough memory for us to continue unrolling this block 是否还有足够的内存让我们继续展开这个块
     var keepUnrolling = true
-    // Initial per-task memory to request for unrolling blocks (bytes).
+    // Initial per-task memory to request for unrolling blocks (bytes). 用于请求展开块（字节）的初始每任务内存。
     val initialMemoryThreshold = unrollMemoryThreshold
-    // How often to check whether we need to request more memory
+    // How often to check whether we need to request more memory。 检查我们是否需要请求更多内存的频率
     val memoryCheckPeriod = conf.get(UNROLL_MEMORY_CHECK_PERIOD)
-    // Memory currently reserved by this task for this particular unrolling operation
+    // Memory currently reserved by this task for this particular unrolling operation  此任务当前为此特定untroll操作保留的内存
     var memoryThreshold = initialMemoryThreshold
-    // Memory to request as a multiple of current vector size
+    // Memory to request as a multiple of current vector size 作为当前向量大小的倍数请求的内存
     val memoryGrowthFactor = conf.get(UNROLL_MEMORY_GROWTH_FACTOR)
-    // Keep track of unroll memory used by this particular block / putIterator() operation
+    // Keep track of unroll memory used by this particular block / putIterator() operation  跟踪此特定块 / putIterator() 操作使用的展开内存
     var unrollMemoryUsedByThisBlock = 0L
 
-    // Request enough memory to begin unrolling
+    // Request enough memory to begin unrolling  请求足够的内存以开始展开
     keepUnrolling =
       reserveUnrollMemoryForThisTask(blockId, initialMemoryThreshold, memoryMode)
 
@@ -441,6 +476,7 @@ private[spark] class MemoryStore(
       var freedMemory = 0L
       val rddToAdd = blockId.flatMap(getRddId)
       val selectedBlocks = new ArrayBuffer[BlockId]
+      // 判断块是否是可驱逐的
       def blockIsEvictable(blockId: BlockId, entry: MemoryEntry[_]): Boolean = {
         entry.memoryMode == memoryMode && (rddToAdd.isEmpty || rddToAdd != getRddId(blockId))
       }

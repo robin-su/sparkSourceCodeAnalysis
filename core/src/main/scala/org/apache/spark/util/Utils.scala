@@ -1149,6 +1149,7 @@ private[spark] object Utils extends Logging {
   }
 
   /**
+   * 将字节数量转换为人类可读的字符串，例如“4.0 MB”。
    * Convert a quantity in bytes to a human-readable string such as "4.0 MB".
    */
   def bytesToString(size: Long): String = bytesToString(BigInt(size))

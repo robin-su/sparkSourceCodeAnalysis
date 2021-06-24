@@ -146,10 +146,19 @@ private[spark] class UnifiedMemoryManager private[memory] (
       numBytes, taskAttemptId, maybeGrowExecutionPool, () => computeMaxExecutionPoolSize)
   }
 
+  /**
+   * 获取Storage Memeory
+   *
+   * @param blockId
+   * @param numBytes
+   * @param memoryMode
+   *  @return whether all N bytes were successfully granted.
+   */
   override def acquireStorageMemory(
       blockId: BlockId,
       numBytes: Long,
       memoryMode: MemoryMode): Boolean = synchronized {
+    // 判断堆内内存和堆外内存是否符合逻辑
     assertInvariants()
     assert(numBytes >= 0)
     val (executionPool, storagePool, maxMemory) = memoryMode match {
@@ -162,18 +171,24 @@ private[spark] class UnifiedMemoryManager private[memory] (
         offHeapStorageMemoryPool,
         maxOffHeapStorageMemory)
     }
+    // 判断所需要的内存是否超过最大限制
     if (numBytes > maxMemory) {
       // Fail fast if the block simply won't fit
       logInfo(s"Will not store $blockId as the required space ($numBytes bytes) exceeds our " +
         s"memory limit ($maxMemory bytes)")
       return false
     }
+    // 若需要的字节数，大于storagePool中空闲的内存数量，也就是说没有足够的StorageMemory，因此要向ExecutionMemory借用内存
     if (numBytes > storagePool.memoryFree) {
       // There is not enough free memory in the storage pool, so try to borrow free memory from
       // the execution pool.
+      //  numBytes - storagePool.memoryFree 表示还差多少StorageMemory
       val memoryBorrowedFromExecution = Math.min(executionPool.memoryFree,
         numBytes - storagePool.memoryFree)
+      // 也就是说：从执行内存中借去必要的内存给缓存内存
+      // 执行线程池减去内存大小
       executionPool.decrementPoolSize(memoryBorrowedFromExecution)
+      // 缓存线程池增加内存大小
       storagePool.incrementPoolSize(memoryBorrowedFromExecution)
     }
     storagePool.acquireMemory(blockId, numBytes)
