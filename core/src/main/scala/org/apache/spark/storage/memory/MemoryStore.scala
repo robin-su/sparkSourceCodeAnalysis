@@ -452,6 +452,7 @@ private[spark] class MemoryStore(
   }
 
   /**
+   * 通过block Id返回所属的RDD,若不是Rdd的block,则返回None
    * Return the RDD ID that a given block ID is from, or None if it is not an RDD block.
    */
   private def getRddId(blockId: BlockId): Option[Int] = {
@@ -465,7 +466,7 @@ private[spark] class MemoryStore(
    * RDDs that don't fit into memory that we want to avoid).
    *
    * @param blockId the ID of the block we are freeing space for, if any
-   * @param space the size of this block
+   * @param space the size of this block  块的大小
    * @param memoryMode the type of memory to free (on- or off-heap)
    * @return the amount of memory (in bytes) freed by eviction
    */
@@ -476,25 +477,36 @@ private[spark] class MemoryStore(
     assert(space > 0)
     memoryManager.synchronized {
       var freedMemory = 0L
+      // 需要添加的RDD
       val rddToAdd = blockId.flatMap(getRddId)
+      // 选择的块
       val selectedBlocks = new ArrayBuffer[BlockId]
-      // 判断块是否是可驱逐的
+      // 判断块是否是可驱逐的RDD
       def blockIsEvictable(blockId: BlockId, entry: MemoryEntry[_]): Boolean = {
+        // 存储模式相同，且blockId没有被RDD占用，或不是要替换相同RDD的不同数据块
         entry.memoryMode == memoryMode && (rddToAdd.isEmpty || rddToAdd != getRddId(blockId))
       }
       // This is synchronized to ensure that the set of entries is not changed
       // (because of getValue or getBytes) while traversing the iterator, as that
       // can lead to exceptions.
       entries.synchronized {
+        // 遍历内存
         val iterator = entries.entrySet().iterator()
         while (freedMemory < space && iterator.hasNext) {
           val pair = iterator.next()
+          // 获取blockId
           val blockId = pair.getKey
+          // 获取block对应的内存空间
           val entry = pair.getValue
+          // 若可以驱逐
           if (blockIsEvictable(blockId, entry)) {
             // We don't want to evict blocks which are currently being read, so we need to obtain
             // an exclusive write lock on blocks which are candidates for eviction. We perform a
             // non-blocking "tryLock" here in order to ignore blocks which are locked for reading:
+            /**
+             * 我们不限驱逐正在被读取的块，所以我们需要在用来驱逐的候选人块获取一个排它的写锁。
+             * 我们在这里执行一个非阻塞的tryLock为了忽略被锁定的读的块
+             */
             if (blockInfoManager.lockForWriting(blockId, blocking = false).isDefined) {
               selectedBlocks += blockId
               freedMemory += pair.getValue.size
@@ -503,9 +515,12 @@ private[spark] class MemoryStore(
         }
       }
 
+      // 驱逐块
       def dropBlock[T](blockId: BlockId, entry: MemoryEntry[T]): Unit = {
         val data = entry match {
+          // 饭序列化的内存Entry
           case DeserializedMemoryEntry(values, _, _) => Left(values)
+          // 序列化的内存Entry
           case SerializedMemoryEntry(buffer, _, _) => Right(buffer)
         }
         val newEffectiveStorageLevel =

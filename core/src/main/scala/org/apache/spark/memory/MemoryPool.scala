@@ -40,6 +40,7 @@ private[memory] abstract class MemoryPool(lock: Object) {
   }
 
   /**
+   * 返回内存池中空闲的内存信息
    * Returns the amount of free memory in the pool, in bytes.
    */
   final def memoryFree: Long = lock.synchronized {
