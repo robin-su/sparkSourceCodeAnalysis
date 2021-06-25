@@ -39,6 +39,10 @@ import org.apache.spark.util.{SizeEstimator, Utils}
 import org.apache.spark.util.collection.SizeTrackingVector
 import org.apache.spark.util.io.{ChunkedByteBuffer, ChunkedByteBufferOutputStream}
 
+/**
+ * memoryEntry本质上就是内存中一个block，指向了存储在内存中的真实数据。
+ * @tparam T
+ */
 private sealed trait MemoryEntry[T] {
   def size: Long
   def memoryMode: MemoryMode
@@ -127,6 +131,7 @@ private[spark] class MemoryStore(
   /** 可用于存储的内存总量，以字节为单位。
    * Total amount of memory available for storage, in bytes. */
   private def maxMemory: Long = {
+    // 堆内缓存内存 + 堆外缓存内存
     memoryManager.maxOnHeapStorageMemory + memoryManager.maxOffHeapStorageMemory
   }
 
@@ -226,7 +231,7 @@ private[spark] class MemoryStore(
       valuesHolder: ValuesHolder[T]): Either[Long, Long] = {
     require(!contains(blockId), s"Block $blockId is already present in the MemoryStore")
 
-    // Number of elements unrolled so far // 目前为止，到目前为止展开的unrolled的元素数
+    // Number of elements unrolled so far 目前为止，到目前为止展开的unrolled的元素数
     var elementsUnrolled = 0
     // Whether there is still enough memory for us to continue unrolling this block 是否还有足够的内存让我们继续展开这个块
     var keepUnrolling = true
@@ -252,9 +257,11 @@ private[spark] class MemoryStore(
       unrollMemoryUsedByThisBlock += initialMemoryThreshold
     }
 
+    // 安全地展开这个块，定期检查我们是否超过了我们的阈值
     // Unroll this block safely, checking whether we have exceeded our threshold periodically
     while (values.hasNext && keepUnrolling) {
       valuesHolder.storeValue(values.next())
+
       if (elementsUnrolled % memoryCheckPeriod == 0) {
         val currentSize = valuesHolder.estimatedSize()
         // If our vector's size has exceeded the threshold, request more memory
@@ -592,6 +599,7 @@ private[spark] class MemoryStore(
   }
 
   /**
+   * 保留内存用于展开此任务的给定块。
    * Reserve memory for unrolling the given block for this task.
    *
    * @return whether the request is granted.
@@ -601,9 +609,13 @@ private[spark] class MemoryStore(
       memory: Long,
       memoryMode: MemoryMode): Boolean = {
     memoryManager.synchronized {
+      // 获取内存，必要时驱逐块
       val success = memoryManager.acquireUnrollMemory(blockId, memory, memoryMode)
+      // 若成功
       if (success) {
+        // 将尝试任务ID改成当前ID
         val taskAttemptId = currentTaskAttemptId()
+
         val unrollMemoryMap = memoryMode match {
           case MemoryMode.ON_HEAP => onHeapUnrollMemoryMap
           case MemoryMode.OFF_HEAP => offHeapUnrollMemoryMap
@@ -618,7 +630,7 @@ private[spark] class MemoryStore(
    * Release memory used by this task for unrolling blocks.
    * If the amount is not specified, remove the current task's allocation altogether.
    */
-  def releaseUnrollMemoryForThisTask(memoryMode: MemoryMode, memory: Long = Long.MaxValue): Unit = {
+  def  (memoryMode: MemoryMode, memory: Long = Long.MaxValue): Unit = {
     val taskAttemptId = currentTaskAttemptId()
     memoryManager.synchronized {
       val unrollMemoryMap = memoryMode match {
@@ -830,6 +842,7 @@ private[storage] class PartiallyUnrolledIterator[T](
 }
 
 /**
+ * 即这个类可以将outputstream重定向到另一个outputstream。
  * A wrapper which allows an open [[OutputStream]] to be redirected to a different sink.
  */
 private[storage] class RedirectableOutputStream extends OutputStream {
