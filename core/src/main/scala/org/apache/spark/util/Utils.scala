@@ -832,6 +832,7 @@ private[spark] object Utils extends Logging {
   }
 
   /**
+   * 返回 Spark 可以写入文件的配置的本地目录。该方法本身不创建任何目录，只是封装了根据部署方式定位本地目录的逻辑。
    * Return the configured local directories where Spark can write files. This
    * method does not create any directories on its own, it only encapsulates the
    * logic of locating the local directories according to deployment mode.
