@@ -54,6 +54,8 @@ private case class DeserializedMemoryEntry[T](
     classTag: ClassTag[T]) extends MemoryEntry[T] {
   val memoryMode: MemoryMode = MemoryMode.ON_HEAP
 }
+
+// SerializedMemoryEntry 是用来保存序列化之后的ByteBuffer数组的，buffer中记录的是真实的Array[ByteBuffer]数据
 private case class SerializedMemoryEntry[T](
     buffer: ChunkedByteBuffer,
     memoryMode: MemoryMode,
@@ -113,9 +115,9 @@ private[spark] class MemoryStore(
   private val entries = new LinkedHashMap[BlockId, MemoryEntry[_]](32, 0.75f, true)
 
   // taskAttemptId 表示申请内存的 task id
-  // A mapping from taskAttemptId to amount of memory used for  a bunrollinglock (in bytes)
+  // A mapping from taskAttemptId to amount of memory used for a bunrollinglock (in bytes)
   // All accesses of this map are assumed to have manually synchronized on `memoryManager`
-  // 堆内内存，key为申请内存的task id,value为申请的字节数大小
+  // 堆内展开内存，key为申请内存的task id,value为申请的字节数大小
   private val onHeapUnrollMemoryMap = mutable.HashMap[Long, Long]()
 
   // 注意：堆外展开内存仅在 putIteratorAsBytes() 中使用，因为堆外缓存始终存储序列化值。
