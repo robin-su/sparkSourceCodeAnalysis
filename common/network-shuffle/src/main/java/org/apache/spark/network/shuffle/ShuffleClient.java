@@ -22,16 +22,24 @@ import java.util.Collections;
 
 import com.codahale.metrics.MetricSet;
 
-/** Provides an interface for reading shuffle files, either from an Executor or external service. */
+/**
+ * 它定义了从executor或者是外部服务读取shuffle数据的接口。
+ *
+ * Provides an interface for reading shuffle files, either from an Executor or external service.
+ */
 public abstract class ShuffleClient implements Closeable {
 
   /**
+   * init方法用于初始化ShuffleClient，需要指定executor 的appId
+   *
    * Initializes the ShuffleClient, specifying this Executor's appId.
    * Must be called before any other method on the ShuffleClient.
    */
   public void init(String appId) { }
 
   /**
+   * 用于异步从另一个节点请求获取blocks
+   *
    * Fetch a sequence of blocks from a remote node asynchronously,
    *
    * Note that this API takes a sequence so the implementation can batch requests, and does not
@@ -57,6 +65,8 @@ public abstract class ShuffleClient implements Closeable {
       DownloadFileManager downloadFileManager);
 
   /**
+   * shuffleMetrics 用于记录shuffle相关的metrics信息
+   *
    * Get the shuffle MetricsSet from ShuffleClient, this will be used in MetricsSystem to
    * get the Shuffle related metrics.
    */

@@ -112,6 +112,7 @@ private[spark] class ByteBufferBlockData(
 }
 
 /**
+ * 运行在每个节点（驱动程序和执行程序）上的管理器，它提供用于在本地和远程将块放入和检索到各种存储（内存、磁盘和堆外）的接口。
  * Manager running on every node (driver and executors) which provides interfaces for putting and
  * retrieving blocks both locally and remotely into various stores (memory, disk, and off-heap).
  *
@@ -126,7 +127,7 @@ private[spark] class BlockManager(
     memoryManager: MemoryManager,
     mapOutputTracker: MapOutputTracker,
     shuffleManager: ShuffleManager,
-    val blockTransferService: BlockTransferService,
+    val blockTransferService: BlockTransferService,,
     securityManager: SecurityManager,
     numUsableCores: Int)
   extends BlockDataManager with BlockEvictionHandler with Logging {
