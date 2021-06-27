@@ -39,6 +39,10 @@ import org.apache.spark.util.{SizeEstimator, Utils}
 import org.apache.spark.util.collection.SizeTrackingVector
 import org.apache.spark.util.io.{ChunkedByteBuffer, ChunkedByteBufferOutputStream}
 
+/**
+ * memoryEntry本质上就是内存中一个block，指向了存储在内存中的真实数据。
+ * @tparam T
+ */
 private sealed trait MemoryEntry[T] {
   def size: Long
   def memoryMode: MemoryMode
@@ -50,8 +54,6 @@ private case class DeserializedMemoryEntry[T](
     classTag: ClassTag[T]) extends MemoryEntry[T] {
   val memoryMode: MemoryMode = MemoryMode.ON_HEAP
 }
-
-// SerializedMemoryEntry 是用来保存序列化之后的ByteBuffer数组的，buffer中记录的是真实的Array[ByteBuffer]数据
 private case class SerializedMemoryEntry[T](
     buffer: ChunkedByteBuffer,
     memoryMode: MemoryMode,
@@ -111,9 +113,9 @@ private[spark] class MemoryStore(
   private val entries = new LinkedHashMap[BlockId, MemoryEntry[_]](32, 0.75f, true)
 
   // taskAttemptId 表示申请内存的 task id
-  // A mapping from taskAttemptId to amount of memory used for a bunrollinglock (in bytes)
+  // A mapping from taskAttemptId to amount of memory used for  a bunrollinglock (in bytes)
   // All accesses of this map are assumed to have manually synchronized on `memoryManager`
-  // 堆内展开内存，key为申请内存的task id,value为申请的字节数大小
+  // 堆内内存，key为申请内存的task id,value为申请的字节数大小
   private val onHeapUnrollMemoryMap = mutable.HashMap[Long, Long]()
 
   // 注意：堆外展开内存仅在 putIteratorAsBytes() 中使用，因为堆外缓存始终存储序列化值。
@@ -129,6 +131,7 @@ private[spark] class MemoryStore(
   /** 可用于存储的内存总量，以字节为单位。
    * Total amount of memory available for storage, in bytes. */
   private def maxMemory: Long = {
+    // 堆内缓存内存 + 堆外缓存内存
     memoryManager.maxOnHeapStorageMemory + memoryManager.maxOffHeapStorageMemory
   }
 
@@ -228,7 +231,7 @@ private[spark] class MemoryStore(
       valuesHolder: ValuesHolder[T]): Either[Long, Long] = {
     require(!contains(blockId), s"Block $blockId is already present in the MemoryStore")
 
-    // Number of elements unrolled so far // 目前为止，到目前为止展开的unrolled的元素数
+    // Number of elements unrolled so far 目前为止，到目前为止展开的unrolled的元素数
     var elementsUnrolled = 0
     // Whether there is still enough memory for us to continue unrolling this block 是否还有足够的内存让我们继续展开这个块
     var keepUnrolling = true
@@ -254,9 +257,11 @@ private[spark] class MemoryStore(
       unrollMemoryUsedByThisBlock += initialMemoryThreshold
     }
 
+    // 安全地展开这个块，定期检查我们是否超过了我们的阈值
     // Unroll this block safely, checking whether we have exceeded our threshold periodically
     while (values.hasNext && keepUnrolling) {
       valuesHolder.storeValue(values.next())
+
       if (elementsUnrolled % memoryCheckPeriod == 0) {
         val currentSize = valuesHolder.estimatedSize()
         // If our vector's size has exceeded the threshold, request more memory
@@ -594,6 +599,7 @@ private[spark] class MemoryStore(
   }
 
   /**
+   * 保留内存用于展开此任务的给定块。
    * Reserve memory for unrolling the given block for this task.
    *
    * @return whether the request is granted.
@@ -603,9 +609,13 @@ private[spark] class MemoryStore(
       memory: Long,
       memoryMode: MemoryMode): Boolean = {
     memoryManager.synchronized {
+      // 获取内存，必要时驱逐块
       val success = memoryManager.acquireUnrollMemory(blockId, memory, memoryMode)
+      // 若成功
       if (success) {
+        // 将尝试任务ID改成当前ID
         val taskAttemptId = currentTaskAttemptId()
+
         val unrollMemoryMap = memoryMode match {
           case MemoryMode.ON_HEAP => onHeapUnrollMemoryMap
           case MemoryMode.OFF_HEAP => offHeapUnrollMemoryMap
@@ -832,6 +842,7 @@ private[storage] class PartiallyUnrolledIterator[T](
 }
 
 /**
+ * 即这个类可以将outputstream重定向到另一个outputstream。
  * A wrapper which allows an open [[OutputStream]] to be redirected to a different sink.
  */
 private[storage] class RedirectableOutputStream extends OutputStream {
