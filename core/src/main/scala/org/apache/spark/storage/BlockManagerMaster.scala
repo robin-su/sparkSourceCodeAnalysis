@@ -27,6 +27,16 @@ import org.apache.spark.rpc.RpcEndpointRef
 import org.apache.spark.storage.BlockManagerMessages._
 import org.apache.spark.util.{RpcUtils, ThreadUtils}
 
+/**
+ *
+ *
+ * BlockManagerMaster 这个类是对 driver的 EndpointRef 的包装，可以说是 driver EndpointRef的一个代理类，
+ * 在请求访问driver的时候，调用driver的EndpointRef的对应方法，并处理其返回。
+ *
+ * @param driverEndpoint
+ * @param conf
+ * @param isDriver
+ */
 private[spark]
 class BlockManagerMaster(
     var driverEndpoint: RpcEndpointRef,
@@ -34,9 +44,14 @@ class BlockManagerMaster(
     isDriver: Boolean)
   extends Logging {
 
+  // rpc 失效时间
   val timeout = RpcUtils.askRpcTimeout(conf)
 
-  /** Remove a dead executor from the driver endpoint. This is only called on the driver side. */
+  /**
+   *
+   *
+   * Remove a dead executor from the driver endpoint. This is only called on the driver side.
+   */
   def removeExecutor(execId: String) {
     tell(RemoveExecutor(execId))
     logInfo("Removed " + execId + " successfully in removeExecutor")

@@ -301,6 +301,8 @@ private[spark] object Utils extends Logging {
   }
 
   /**
+   * 在给定的父目录中创建一个目录。该目录保证是新创建的，并且没有标记为自动删除。
+   *
    * Create a directory inside the given parent directory. The directory is guaranteed to be
    * newly created, and is not marked for automatic deletion.
    */
