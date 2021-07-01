@@ -30,31 +30,44 @@ import org.apache.spark.network.shuffle.{BlockFetchingListener, DownloadFileMana
 import org.apache.spark.storage.{BlockId, EncryptedManagedBuffer, StorageLevel}
 import org.apache.spark.util.ThreadUtils
 
+/**
+ * 它是ShuffleClient的子类。它是ShuffleClient的抽象实现类，定义了读取shuffle的基础框架。
+ */
 private[spark]
 abstract class BlockTransferService extends ShuffleClient with Closeable with Logging {
 
   /**
+   * 它额外提供了使用BlockDataManager初始化的方法，方便从本地获取block或者将block存入本地。
+   *
    * Initialize the transfer service by giving it the BlockDataManager that can be used to fetch
    * local blocks or put local blocks.
    */
   def init(blockDataManager: BlockDataManager): Unit
 
   /**
+   * 关闭ShuffleClient
+   *
    * Tear down the transfer service.
    */
   def close(): Unit
 
   /**
+   * 服务正在监听的端口
+   *
    * Port number the service is listening on, available only after [[init]] is invoked.
    */
   def port: Int
 
   /**
+   * 服务正在监听的hostname
+   *
    * Host name the service is listening on, available only after [[init]] is invoked.
    */
   def hostName: String
 
   /**
+   * 跟继承类一样，没有实现，由于继承关系可以不写。
+   *
    * Fetch a sequence of blocks from a remote node asynchronously,
    * available only after [[init]] is invoked.
    *
@@ -71,6 +84,8 @@ abstract class BlockTransferService extends ShuffleClient with Closeable with Lo
       tempFileManager: DownloadFileManager): Unit
 
   /**
+   * 上传block到远程节点，返回一个future对象
+   *
    * Upload a single block to a remote node, available only after [[init]] is invoked.
    */
   def uploadBlock(
@@ -83,6 +98,8 @@ abstract class BlockTransferService extends ShuffleClient with Closeable with Lo
       classTag: ClassTag[_]): Future[Unit]
 
   /**
+   * 同步抓取远程节点的block，直到block数据获取成功才返回
+   *
    * A special case of [[fetchBlocks]], as it fetches only one block and is blocking.
    *
    * It is also only available after [[init]] is invoked.
@@ -122,6 +139,8 @@ abstract class BlockTransferService extends ShuffleClient with Closeable with Lo
   }
 
   /**
+   * uploadBlockSync 方法：同步上传信息，直到上传成功才结束
+   *
    * Upload a single block to a remote node, available only after [[init]] is invoked.
    *
    * This method is similar to [[uploadBlock]], except this one blocks the thread
