@@ -101,6 +101,10 @@ public class OneForOneBlockFetcher {
   }
 
   /**
+   *
+   * 开始获取过程，在获取每个块时调用侦听器。给定的消息将使用 Java 序列化程序进行序列化，并且 RPC 必须返回一个 StreamHandle。
+   * 我们将立即发送所有获取请求，而不会进行限制。
+   *
    * Begins the fetching process, calling the listener with every block fetched.
    * The given message will be serialized with the Java serializer, and the RPC must return a
    * {@link StreamHandle}. We will send all fetch requests immediately, without throttling.
@@ -117,6 +121,9 @@ public class OneForOneBlockFetcher {
           streamHandle = (StreamHandle) BlockTransferMessage.Decoder.fromByteBuffer(response);
           logger.trace("Successfully opened blocks {}, preparing to fetch chunks.", streamHandle);
 
+          /**
+           * 立即请求所有块——我们期望请求的总大小是合理的，因为 [[ShuffleBlockFetcherIterator]] 中的更高级别的分块。
+           */
           // Immediately request all chunks -- we expect that the total size of the request is
           // reasonable due to higher level chunking in [[ShuffleBlockFetcherIterator]].
           for (int i = 0; i < streamHandle.numChunks; i++) {

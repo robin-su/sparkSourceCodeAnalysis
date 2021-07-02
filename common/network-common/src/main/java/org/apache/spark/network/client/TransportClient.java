@@ -151,6 +151,7 @@ public class TransportClient implements Closeable {
   }
 
   /**
+   * 请求从远程端使用给定的流 ID 流式传输数据
    * Request to stream the data with the given stream ID from the remote end.
    *
    * @param streamId The stream to fetch.
@@ -188,11 +189,13 @@ public class TransportClient implements Closeable {
     if (logger.isTraceEnabled()) {
       logger.trace("Sending RPC to {}", getRemoteAddress(channel));
     }
-
+    // 获取请求id
     long requestId = requestId();
+    //
     handler.addRpcRequest(requestId, callback);
 
     RpcChannelListener listener = new RpcChannelListener(requestId, callback);
+    // 添加鉴权
     channel.writeAndFlush(new RpcRequest(requestId, new NioManagedBuffer(message)))
       .addListener(listener);
 

@@ -56,7 +56,11 @@ public abstract class BlockTransferMessage implements Encodable {
 
   // NB: Java does not support static methods in interfaces, so we must put this in a static class.
   public static class Decoder {
-    /** Deserializes the 'type' byte followed by the message itself. */
+    /**
+     * 反序列化“类型”字节，后跟消息本身。
+     *
+     * Deserializes the 'type' byte followed by the message itself.
+     */
     public static BlockTransferMessage fromByteBuffer(ByteBuffer msg) {
       ByteBuf buf = Unpooled.wrappedBuffer(msg);
       byte type = buf.readByte();

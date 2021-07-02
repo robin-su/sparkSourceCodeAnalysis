@@ -132,11 +132,13 @@ private[spark] class BlockManager(
     numUsableCores: Int)
   extends BlockDataManager with BlockEvictionHandler with Logging {
 
+  // 是否启用外部shuffle服务
   private[spark] val externalShuffleServiceEnabled =
     conf.get(config.SHUFFLE_SERVICE_ENABLED)
   private val remoteReadNioBufferConversion =
     conf.getBoolean("spark.network.remoteReadNioBufferConversion", false)
 
+  // DiskBlockManager对象，用于管理block和物理block文件的映射关系的
   val diskBlockManager = {
     // Only perform cleanup if an external service is not serving our shuffle files.
     val deleteFilesOnStop =
@@ -151,6 +153,7 @@ private[spark] class BlockManager(
     ThreadUtils.newDaemonCachedThreadPool("block-manager-future", 128))
 
   // Actual storage of where blocks are kept
+  // 块保存位置的实际存储
   private[spark] val memoryStore =
     new MemoryStore(conf, blockInfoManager, serializerManager, memoryManager, this)
   private[spark] val diskStore = new DiskStore(conf, diskBlockManager, securityManager)
@@ -163,6 +166,9 @@ private[spark] class BlockManager(
   private val maxOnHeapMemory = memoryManager.maxOnHeapStorageMemory
   private val maxOffHeapMemory = memoryManager.maxOffHeapStorageMemory
 
+  /**
+   * 外部 shuffle 服务使用的端口。在 Yarn 模式下，这可能已经通过 Hadoop 配置设置，因为服务器在 Yarn NM 中启动。
+   */
   // Port used by the external shuffle service. In Yarn mode, this may be already be
   // set through the Hadoop configuration as the server is launched in the Yarn NM.
   private val externalShuffleServicePort = {
@@ -180,10 +186,16 @@ private[spark] class BlockManager(
 
   var blockManagerId: BlockManagerId = _
 
+  /**
+   * 为该执行程序的 shuffle 文件提供服务的服务器的地址。这要么是一个外部服务，要么就是我们自己的 Executor 的 BlockManager。
+   */
   // Address of the server that serves this executor's shuffle files. This is either an external
   // service, or just our own Executor's BlockManager.
   private[spark] var shuffleServerId: BlockManagerId = _
 
+  /**
+   * 客户端读取其他执行者的随机文件。这要么是一个外部服务，要么只是直接连接到其他执行者的标准BlockTransferService。
+   */
   // Client to read other executors' shuffle files. This is either an external service, or just the
   // standard BlockTransferService to directly connect to other Executors.
   private[spark] val shuffleClient = if (externalShuffleServiceEnabled) {

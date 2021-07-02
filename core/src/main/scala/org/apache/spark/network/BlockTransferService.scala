@@ -114,9 +114,11 @@ abstract class BlockTransferService extends ShuffleClient with Closeable with Lo
     val result = Promise[ManagedBuffer]()
     fetchBlocks(host, port, execId, Array(blockId),
       new BlockFetchingListener {
+        // 若拉取block失败
         override def onBlockFetchFailure(blockId: String, exception: Throwable): Unit = {
           result.failure(exception)
         }
+        // 拉取block成功调用
         override def onBlockFetchSuccess(blockId: String, data: ManagedBuffer): Unit = {
           data match {
             case f: FileSegmentManagedBuffer =>
@@ -125,6 +127,7 @@ abstract class BlockTransferService extends ShuffleClient with Closeable with Lo
               result.success(e)
             case _ =>
               try {
+                // 使用Nio字节缓存ByteBuffer，将数据写入缓存
                 val ret = ByteBuffer.allocate(data.size.toInt)
                 ret.put(data.nioByteBuffer())
                 ret.flip()

@@ -24,6 +24,8 @@ import io.netty.buffer.ByteBuf;
 import static org.apache.spark.network.shuffle.protocol.BlockTransferMessage.Type;
 
 /**
+ * 从“打开块”消息创建的流中读取的固定数量块的标识符。
+ *
  * Identifier for a fixed number of chunks to read from a stream created by an "open blocks"
  * message. This is used by {@link org.apache.spark.network.shuffle.OneForOneBlockFetcher}.
  */

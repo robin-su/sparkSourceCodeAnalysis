@@ -100,6 +100,16 @@ private[spark] class NettyBlockTransferService(
     }
   }
 
+  /**
+   * 从远程拉取Blocks块信息，重试3次
+   *
+   * @param host the host of the remote node.
+   * @param port the port of the remote node.
+   * @param execId the executor id.
+   * @param blockIds block ids to fetch.
+   * @param listener the listener to receive block fetching status.
+   * @param tempFileManager
+   */
   override def fetchBlocks(
       host: String,
       port: Int,
@@ -107,16 +117,20 @@ private[spark] class NettyBlockTransferService(
       blockIds: Array[String],
       listener: BlockFetchingListener,
       tempFileManager: DownloadFileManager): Unit = {
+    // 从executor中获取block块信息
     logTrace(s"Fetch blocks from $host:$port (executor id $execId)")
     try {
       val blockFetchStarter = new RetryingBlockFetcher.BlockFetchStarter {
         override def createAndStart(blockIds: Array[String], listener: BlockFetchingListener) {
+          // 创建client
           val client = clientFactory.createClient(host, port)
+          // 拉取并下载
           new OneForOneBlockFetcher(client, appId, execId, blockIds, listener,
             transportConf, tempFileManager).start()
         }
       }
 
+      // 重试机制
       val maxRetries = transportConf.maxIORetries()
       if (maxRetries > 0) {
         // Note this Fetcher will correctly handle maxRetries == 0; we avoid it just in case there's
@@ -134,6 +148,7 @@ private[spark] class NettyBlockTransferService(
 
   override def port: Int = server.getPort
 
+  // 上传Block信息
   override def uploadBlock(
       hostname: String,
       port: Int,

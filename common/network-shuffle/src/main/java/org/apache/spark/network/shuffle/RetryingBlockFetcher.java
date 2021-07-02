@@ -43,11 +43,16 @@ import org.apache.spark.network.util.TransportConf;
 public class RetryingBlockFetcher {
 
   /**
+   * 用于启动对所有块的第一次提取，随后用于在任何剩余块上重试提取。
+   *
    * Used to initiate the first fetch for all blocks, and subsequently for retrying the fetch on any
    * remaining blocks.
    */
   public interface BlockFetchStarter {
     /**
+     * 创建一个新的 BlockFetcher 来获取给定的块 ID，它可以执行一些同步引导，然后是完全异步的块获取。 BlockFetcher 最终必须在每个输入 blockId 上调用 Listener，
+     * 否则此方法必须抛出异常。此方法应始终尝试从 org.apache.spark.network.client.TransportClientFactory 获取新的 TransportClient 以修复连接问题。
+     *
      * Creates a new BlockFetcher to fetch the given block ids which may do some synchronous
      * bootstrapping followed by fully asynchronous block fetching.
      * The BlockFetcher must eventually invoke the Listener on every input blockId, or else this
