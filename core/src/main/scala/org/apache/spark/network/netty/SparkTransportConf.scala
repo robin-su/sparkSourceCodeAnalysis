@@ -41,6 +41,10 @@ object SparkTransportConf {
   private val MAX_DEFAULT_NETTY_THREADS = 8
 
   /**
+   * 用于从 [[SparkConf]] 创建 [[TransportConf]] 的实用程序。
+   *
+   * numUsableCores 如果非零，这将限制服务器和客户端线程仅使用给定数量的内核，而不是机器的所有内核。只有在尚未设置这些属性时才会出现此限制。
+   *
    * Utility for creating a [[TransportConf]] from a [[SparkConf]].
    * @param _conf the [[SparkConf]]
    * @param module the module name
@@ -54,8 +58,11 @@ object SparkTransportConf {
     // Specify thread configuration based on our JVM's allocation of cores (rather than necessarily
     // assuming we have all the machine's cores).
     // NB: Only set if serverThreads/clientThreads not already set.
+    // 获取线程数量
     val numThreads = defaultNumThreads(numUsableCores)
+    // 设置server线程数
     conf.setIfMissing(s"spark.$module.io.serverThreads", numThreads.toString)
+    // 设置客户端线程数
     conf.setIfMissing(s"spark.$module.io.clientThreads", numThreads.toString)
 
     new TransportConf(module, new ConfigProvider {
@@ -68,12 +75,17 @@ object SparkTransportConf {
   }
 
   /**
+   * 返回 Netty 客户端和服务器线程池的默认线程数。如果 numUsableCores 为 0，我们将使用 Runtime 获取可用内核的大致数量。
+   *
    * Returns the default number of threads for both the Netty client and server thread pools.
    * If numUsableCores is 0, we will use Runtime get an approximate number of available cores.
    */
   private def defaultNumThreads(numUsableCores: Int): Int = {
-    val availableCores =
+    // 若numUsableCores>0,则返回numUsableCores，否则返回系统所有的内核数
+    val availableCores = {
       if (numUsableCores > 0) numUsableCores else Runtime.getRuntime.availableProcessors()
+    }
+    // 取availableCores和8的相对较小的线程
     math.min(availableCores, MAX_DEFAULT_NETTY_THREADS)
   }
 }

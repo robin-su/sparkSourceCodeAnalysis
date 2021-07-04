@@ -33,6 +33,9 @@ import org.apache.spark.serializer.Serializer
 import org.apache.spark.storage.{BlockId, StorageLevel}
 
 /**
+ * 通过简单地为每个请求的块注册一个块来提供打开块的请求。处理打开和上传任意 BlockManager 块。
+   打开的块使用“一对一”策略注册，这意味着每个传输层块相当于一个 Spark 级 shuffle 块。
+ *
  * Serves requests to open blocks by simply registering one chunk per block requested.
  * Handles opening and uploading arbitrary BlockManager blocks.
  *
@@ -55,8 +58,11 @@ class NettyBlockRpcServer(
     logTrace(s"Received request: $message")
 
     message match {
+      // 打开块请求
       case openBlocks: OpenBlocks =>
+        // 获取block块的数量
         val blocksNum = openBlocks.blockIds.length
+        // 获取blocks
         val blocks = for (i <- (0 until blocksNum).view)
           yield blockManager.getBlockData(BlockId.apply(openBlocks.blockIds(i)))
         val streamId = streamManager.registerStream(appId, blocks.iterator.asJava,

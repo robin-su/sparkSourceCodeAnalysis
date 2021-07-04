@@ -190,9 +190,16 @@ private[spark] class IndexShuffleBlockResolver(
     }
   }
 
+  /**
+   * 获取Block数据
+   *
+   * @param blockId
+   * @return
+   */
   override def getBlockData(blockId: ShuffleBlockId): ManagedBuffer = {
     // The block is actually going to be a range of a single map output file for this map, so
     // find out the consolidated file, then the offset within that from our index
+    // 该块实际上将是该地图的单个地图输出文件的范围，因此找出合并文件，然后从我们的索引中找出其中的偏移量
     val indexFile = getIndexFile(blockId.shuffleId, blockId.mapId)
 
     // SPARK-22982: if this FileInputStream's position is seeked forward by another piece of code

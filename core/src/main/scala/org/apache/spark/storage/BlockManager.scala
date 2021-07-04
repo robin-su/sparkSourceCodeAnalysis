@@ -387,11 +387,15 @@ private[spark] class BlockManager(
   }
 
   /**
+   * 该接口用于读取本地的block块信息，若block没有被找到，或者无法读取则抛出异常
+   *
    * Interface to get local block data. Throws an exception if the block cannot be found or
    * cannot be read successfully.
    */
   override def getBlockData(blockId: BlockId): ManagedBuffer = {
+    // 若block属于shuflle
     if (blockId.isShuffle) {
+
       shuffleManager.shuffleBlockResolver.getBlockData(blockId.asInstanceOf[ShuffleBlockId])
     } else {
       getLocalBytes(blockId) match {

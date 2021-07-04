@@ -41,6 +41,8 @@ import org.apache.spark.storage.{BlockId, StorageLevel}
 import org.apache.spark.util.Utils
 
 /**
+ * BlockTransferService：使用 Netty 一次获取一组块的
+ *
  * A BlockTransferService that uses Netty to fetch a set of blocks at time.
  */
 private[spark] class NettyBlockTransferService(
