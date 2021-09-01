@@ -230,7 +230,7 @@ private[spark] class ClientApp extends SparkApplication {
 
   override def start(args: Array[String], conf: SparkConf): Unit = {
     val driverArgs = new ClientArguments(args)
-
+//    若包含rpc远程过程调用的等待时间，则设置气等待时间，默认是10秒
     if (!conf.contains("spark.rpc.askTimeout")) {
       conf.set("spark.rpc.askTimeout", "10s")
     }

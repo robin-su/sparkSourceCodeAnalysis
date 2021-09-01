@@ -25,6 +25,7 @@ import java.util.NoSuchElementException;
 /** ConfigProvider based on a Map (copied in the constructor). */
 public class MapConfigProvider extends ConfigProvider {
 
+  // 这个空对象很优秀，可以很大程序上防止null作为参数传递，在一定程序上防止空指针异常
   public static final MapConfigProvider EMPTY = new MapConfigProvider(Collections.emptyMap());
 
   private final Map<String, String> config;

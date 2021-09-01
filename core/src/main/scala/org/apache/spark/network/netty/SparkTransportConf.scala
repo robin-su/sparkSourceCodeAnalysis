@@ -43,7 +43,8 @@ object SparkTransportConf {
   /**
    * 用于从 [[SparkConf]] 创建 [[TransportConf]] 的实用程序。
    *
-   * numUsableCores 如果非零，这将限制服务器和客户端线程仅使用给定数量的内核，而不是机器的所有内核。只有在尚未设置这些属性时才会出现此限制。
+   * numUsableCores 如果非零，这将限制服务器和客户端线程仅使用给定数量的内核，而不是机器的所有内核。
+   * 只有在尚未设置这些属性时才会出现此限制。
    *
    * Utility for creating a [[TransportConf]] from a [[SparkConf]].
    * @param _conf the [[SparkConf]]

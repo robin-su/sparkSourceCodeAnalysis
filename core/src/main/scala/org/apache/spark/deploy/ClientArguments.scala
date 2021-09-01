@@ -40,7 +40,9 @@ private[deploy] class ClientArguments(args: Array[String]) {
   var jarUrl: String = ""
   var mainClass: String = ""
   var supervise: Boolean = DEFAULT_SUPERVISE
+//  默认开启内存是1024M = 1G
   var memory: Int = DEFAULT_MEMORY
+//  默认使用1核心CPU
   var cores: Int = DEFAULT_CORES
   private var _driverOptions = ListBuffer[String]()
   def driverOptions: Seq[String] = _driverOptions.toSeq

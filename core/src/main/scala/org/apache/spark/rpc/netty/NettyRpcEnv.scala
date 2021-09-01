@@ -40,6 +40,15 @@ import org.apache.spark.rpc._
 import org.apache.spark.serializer.{JavaSerializer, JavaSerializerInstance, SerializationStream}
 import org.apache.spark.util.{ByteBufferInputStream, ByteBufferOutputStream, ThreadUtils, Utils}
 
+/**
+ * netty rpc env环境
+ *
+ * @param conf
+ * @param javaSerializerInstance 默认使用java序列化机制
+ * @param host  host地址
+ * @param securityManager
+ * @param numUsableCores
+ */
 private[netty] class NettyRpcEnv(
     val conf: SparkConf,
     javaSerializerInstance: JavaSerializerInstance,
@@ -47,11 +56,13 @@ private[netty] class NettyRpcEnv(
     securityManager: SecurityManager,
     numUsableCores: Int) extends RpcEnv(conf) with Logging {
 
+  // 从 SparkTransportConf 中创建 TransportConf
   private[netty] val transportConf = SparkTransportConf.fromSparkConf(
     conf.clone.set("spark.rpc.io.numConnectionsPerPeer", "1"),
     "rpc",
     conf.getInt("spark.rpc.io.threads", numUsableCores))
 
+//  分发器
   private val dispatcher: Dispatcher = new Dispatcher(this, numUsableCores)
 
   private val streamManager = new NettyStreamManager(this)
@@ -453,6 +464,10 @@ private[rpc] class NettyRpcEnvFactory extends RpcEnvFactory with Logging {
 
   def create(config: RpcEnvConfig): RpcEnv = {
     val sparkConf = config.conf
+    /**
+     * 在多线程中使用 JavaSerializerInstance 是安全的。 但是，如果我们打算在未来支持 KryoSerializer，
+     * 我们必须使用 ThreadLocal 来存储 SerializerInstance
+     */
     // Use JavaSerializerInstance in multiple threads is safe. However, if we plan to support
     // KryoSerializer in future, we have to use ThreadLocal to store SerializerInstance
     val javaSerializerInstance =

@@ -23,6 +23,8 @@ import java.util.Properties;
 import com.google.common.primitives.Ints;
 
 /**
+ * 跟踪我们向用户公开的所有设置的中心位置。
+ *
  * A central location that tracks all the settings we expose to users.
  */
 public class TransportConf {
