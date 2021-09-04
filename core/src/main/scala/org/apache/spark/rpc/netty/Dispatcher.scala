@@ -94,7 +94,7 @@ private[netty] class Dispatcher(nettyEnv: NettyRpcEnv, numUsableCores: Int) exte
       }
       // 若已经被注册，则不能从新注册。有返回值说明已经被注册，所以这个时候不能再次注册。
       if (endpoints.putIfAbsent(name, new EndpointData(name, endpoint, endpointRef)) != null) {
-        throw new IllegalArgumentException(s"There is already an RpcEndpoint called $name")
+        throw new IllegalArgumentException(s"zh is already an RpcEndpoint called $name")
       }
       // 从endpoints中获取EndpointData
       val data = endpoints.get(name)
@@ -257,7 +257,7 @@ private[netty] class Dispatcher(nettyEnv: NettyRpcEnv, numUsableCores: Int) exte
           try {
             // 从receivers对象中获取EndpointData数据
             val data = receivers.take()
-            // 若渠道的对象是空的EndpointData
+            // 若取到对象是空的EndpointData
             if (data == PoisonPill) {
               // 将PoisonPill对象喂给receivers吃，当threadpool执行MessageLoop任务时，取到PoisonPill，马上退出
               // 线程也就死掉了。PoisonPill命名很形象，关闭线程池的方式也是优雅的，是值得我们在工作中去学习和应用的。
@@ -265,7 +265,7 @@ private[netty] class Dispatcher(nettyEnv: NettyRpcEnv, numUsableCores: Int) exte
               receivers.offer(PoisonPill)
               return // 线程马上退出，此时线程也就死掉了
             }
-            // 调用data的inbox属性的process方法进行处理x
+            // 调用data的inbox属性的process方法进行处理
             data.inbox.process(Dispatcher.this)
           } catch {
             case NonFatal(e) => logError(e.getMessage, e)

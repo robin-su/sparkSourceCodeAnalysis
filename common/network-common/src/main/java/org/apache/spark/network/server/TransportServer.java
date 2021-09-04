@@ -91,8 +91,10 @@ public class TransportServer implements Closeable {
   private void init(String hostToBind, int portToBind) {
 
     IOMode ioMode = IOMode.valueOf(conf.ioMode());
+    // 创建boss group
     EventLoopGroup bossGroup = NettyUtils.createEventLoop(ioMode, 1,
       conf.getModuleName() + "-boss");
+    // 创建work group
     EventLoopGroup workerGroup =  NettyUtils.createEventLoop(ioMode, conf.serverThreads(),
       conf.getModuleName() + "-server");
 
@@ -128,12 +130,14 @@ public class TransportServer implements Closeable {
         for (TransportServerBootstrap bootstrap : bootstraps) {
           rpcHandler = bootstrap.doBootstrap(ch, rpcHandler);
         }
+        // 初始化管道
         context.initializePipeline(ch, rpcHandler);
       }
     });
 
     InetSocketAddress address = hostToBind == null ?
         new InetSocketAddress(portToBind): new InetSocketAddress(hostToBind, portToBind);
+    // 绑定端口启动
     channelFuture = bootstrap.bind(address);
     channelFuture.syncUninterruptibly();
 

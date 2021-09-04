@@ -114,8 +114,10 @@ public class TransportChannelHandler extends ChannelInboundHandlerAdapter {
 
   @Override
   public void channelRead(ChannelHandlerContext ctx, Object request) throws Exception {
+    // 若读取的是RequestMessage则交给requestHandler进行处理
     if (request instanceof RequestMessage) {
       requestHandler.handle((RequestMessage) request);
+      // 若读取的是ResponseMessage，则交给responseHandler进行处理
     } else if (request instanceof ResponseMessage) {
       responseHandler.handle((ResponseMessage) request);
     } else {

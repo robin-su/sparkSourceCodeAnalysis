@@ -24,6 +24,8 @@ import org.apache.spark.network.buffer.ManagedBuffer;
 import org.apache.spark.network.buffer.NettyManagedBuffer;
 
 /**
+ * 消息需要远程RPC服务进行处理，是一种需要向客户端恢复的RPC请求信息类型
+ *
  * A generic RPC which is handled by a remote {@link org.apache.spark.network.server.RpcHandler}.
  * This will correspond to a single
  * {@link org.apache.spark.network.protocol.ResponseMessage} (either success or failure).

@@ -31,6 +31,7 @@ import io.netty.buffer.ByteBuf;
  */
 public interface Encodable {
   /** Number of bytes of the encoded form of this object. */
+  // 返回转换的对象数量
   int encodedLength();
 
   /**

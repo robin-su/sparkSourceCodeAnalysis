@@ -41,6 +41,10 @@ public class NettyUtils {
     return new DefaultThreadFactory(threadPoolPrefix, true);
   }
 
+  /**
+   * nio的是由boss group和worker group组成
+   * 这里主要是初始化 boss group
+   */
   /** Creates a Netty EventLoopGroup based on the IOMode. */
   public static EventLoopGroup createEventLoop(IOMode mode, int numThreads, String threadPrefix) {
     ThreadFactory threadFactory = createThreadFactory(threadPrefix);

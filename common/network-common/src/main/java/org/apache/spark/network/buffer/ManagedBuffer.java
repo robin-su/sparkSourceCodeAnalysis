@@ -52,6 +52,8 @@ public abstract class ManagedBuffer {
   public abstract long size();
 
   /**
+   * 将数据按照NIO的ByteBuffer类型返回
+   *
    * 将缓冲区的数据暴露给Nio ByteBuffer(字节缓冲区)。改变返回的ByteBuffer的position和limit属性，但其不会对
    * 缓冲区的内容造成影响
    *
@@ -72,13 +74,15 @@ public abstract class ManagedBuffer {
 
   /**
    * 如果适用，将引用计数加一。
+   * 当有新的使用者使用此视图时，增加引用视图的引用数
    *
    * Increment the reference count by one if applicable.
    */
   public abstract ManagedBuffer retain();
 
   /**
-   * 如果适用，将引用计数减一并在引用计数达到零时释放缓冲区。
+   * 当有使用者不在使用此视图时，减少引用此视图的引用数，当引用数为0时释放缓冲区
+   *
    *
    * If applicable, decrement the reference count by one and deallocates the buffer if the
    * reference count reaches zero.

@@ -24,12 +24,15 @@ import org.apache.spark.network.buffer.ManagedBuffer;
 /** An on-the-wire transmittable message. */
 public interface Message extends Encodable {
   /** Used to identify this request type. */
+  // 返回消息类型
   Type type();
 
   /** An optional body for the message. */
+  // 返回消息中可选的内容体
   ManagedBuffer body();
 
   /** Whether to include the body of the message in the same frame as the message. */
+  // 用于判断消息的主体是否包含在消息的同一帧中
   boolean isBodyInFrame();
 
   /** Preceding every serialized Message is its type, which allows us to deserialize it. */

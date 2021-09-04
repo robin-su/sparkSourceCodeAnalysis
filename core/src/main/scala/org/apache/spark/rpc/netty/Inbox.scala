@@ -28,6 +28,7 @@ import org.apache.spark.rpc.{RpcAddress, RpcEndpoint, ThreadSafeRpcEndpoint}
 
 private[netty] sealed trait InboxMessage
 
+// 该消息类型需要远程RPC的服务进行处理，但是不需要服务端向客户端恢复
 private[netty] case class OneWayMessage(
     senderAddress: RpcAddress,
     content: Any) extends InboxMessage
