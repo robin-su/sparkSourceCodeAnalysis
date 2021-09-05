@@ -29,6 +29,10 @@ import org.apache.spark.unsafe.array.ByteArrayMethods
 import org.apache.spark.unsafe.memory.MemoryAllocator
 
 /**
+ * 内存管理主要涉及了两个组件：JVM 范围的内存管理和单个任务的内存管理。
+ * MemoryManager管理Spark在JVM中的总体内存使用情况。该组件实现了跨任务划分可用内存以及在存储（内存使用缓存和数据传输）
+ * 和执行（计算使用的内存，如shuffle，连接，排序和聚合）之间分配内存的策略。
+ *
  * An abstract memory manager that enforces how memory is shared between execution and storage.
  *
  * In this context, execution memory refers to that used for computation in shuffles, joins,

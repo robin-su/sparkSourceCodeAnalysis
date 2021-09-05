@@ -28,11 +28,23 @@ import com.codahale.metrics.Timer
 import org.apache.spark.internal.Logging
 
 /**
+ * ListenerBus 事件总线，用于接收事件并将事件提交到对应事件的监听器上
+ *
  * An event bus which posts events to its listeners.
  */
 private[spark] trait ListenerBus[L <: AnyRef, E] extends Logging {
 
   // 用来保存注册到这个总线上的监听器对象的。
+  /**
+   * CopyOnWrite含义：先将内存中的数据copy一份，然后把copy出来的修改掉，然后将指向原来内存的指针指向修改后的内存地址就可以了，这个一来原来内存就会被回收。
+   *
+   * 2.适用场景：
+        读操作可以尽可能地快，而写即使慢一些也没有关系。
+        读多写少：黑名单【商品类目等】，每日更新；监听器：迭代操作远多于修改。
+    6.CopyOnWriteArrayList的缺点
+        数据一致性问题：CopyOnWrite容器只能保证数据的最终一致性，不能保证数据的实时一致性。所以如果你希望写入的数据，马上能读到，请不要使用CopyOnWrite容器。
+        内存占用问题：因为CopyOnWrite的写是复制机制，所以在进行写操作的时候，内存里会同时驻扎2个对象的内存。
+   */
   private[this] val listenersPlusTimers = new CopyOnWriteArrayList[(L, Option[Timer])]
 
   // Marked `private[spark]` for access in tests.
@@ -45,6 +57,8 @@ private[spark] trait ListenerBus[L <: AnyRef, E] extends Logging {
   protected def getTimer(listener: L): Option[Timer] = None
 
   /**
+   * 向listeners中添加监听器的方法，由于listeners采用CopyOnWriteArrayList来实现。
+   *
    * Add a listener to listen events. This method is thread-safe and can be called in any thread.
    */
   final def addListener(listener: L): Unit = {
@@ -52,6 +66,8 @@ private[spark] trait ListenerBus[L <: AnyRef, E] extends Logging {
   }
 
   /**
+   * 从Listeners中移除监听器的方法，由于Listener采用的CopyOnWriteArrayList来实现的，所以removeListener方法是线程安全的
+   *
    * Remove a listener and it won't receive any events. This method is thread-safe and can be called
    * in any thread.
    */
@@ -71,6 +87,9 @@ private[spark] trait ListenerBus[L <: AnyRef, E] extends Logging {
 
 
   /**
+   * 此方法的作用是将事件投递给所有的监听器。虽然CopyOnWriteArrayList本身是线程安全的，但是由于postToAll方法内部引入了
+   * "先检查后执行"的逻辑，因而postToAll方法不是线程安全的，所以所有对postToAll方法的调用应该保证在同一个线程中。
+   *
    * Post the event to all registered listeners. The `postToAll` caller should guarantee calling
    * `postToAll` in the same thread for all events.
    */
@@ -111,6 +130,8 @@ private[spark] trait ListenerBus[L <: AnyRef, E] extends Logging {
   }
 
   /**
+   * 用于将事件投递给指定的监听器，此方法只提供了接口定义,具体实现需要子类提供。
+   *
    * Post an event to the specified listener. `onPostEvent` is guaranteed to be called in the same
    * thread for all listeners.
    */
@@ -119,6 +140,12 @@ private[spark] trait ListenerBus[L <: AnyRef, E] extends Logging {
   /** Allows bus implementations to prevent error logging for certain exceptions. */
   protected def isIgnorableException(e: Throwable): Boolean = false
 
+  /**
+   * 查找与指定类型相同的监听器列表
+   *
+   * @tparam T
+   * @return
+   */
   private[spark] def findListenersByClass[T <: L : ClassTag](): Seq[T] = {
     val c = implicitly[ClassTag[T]].runtimeClass
     listeners.asScala.filter(_.getClass == c).map(_.asInstanceOf[T]).toSeq

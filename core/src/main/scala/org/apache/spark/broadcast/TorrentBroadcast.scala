@@ -238,11 +238,14 @@ private[spark] class TorrentBroadcast[T: ClassTag](obj: T, id: Long)
 
   private def readBroadcastBlock(): T = Utils.tryOrIOException {
     TorrentBroadcast.synchronized {
+      // 从broadcastManager中换取广播变量缓存
       val broadcastCache = SparkEnv.get.broadcastManager.cachedValues
-
+//      从blockcastManager中获取广播变量信息，若不存在
       Option(broadcastCache.get(broadcastId)).map(_.asInstanceOf[T]).getOrElse {
         setConf(SparkEnv.get.conf)
+//        再获取blockManager
         val blockManager = SparkEnv.get.blockManager
+//        从blockManager中获取本地广播变量
         blockManager.getLocalValues(broadcastId) match {
           case Some(blockResult) =>
             if (blockResult.data.hasNext) {
@@ -250,6 +253,7 @@ private[spark] class TorrentBroadcast[T: ClassTag](obj: T, id: Long)
               releaseLock(broadcastId)
 
               if (x != null) {
+                // 写入到bolckcastManager
                 broadcastCache.put(broadcastId, x)
               }
 

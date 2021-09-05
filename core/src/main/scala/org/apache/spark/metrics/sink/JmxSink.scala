@@ -23,6 +23,8 @@ import com.codahale.metrics.{JmxReporter, MetricRegistry}
 
 import org.apache.spark.SecurityManager
 
+// 将度量输出到MBean中，这样可以打开java VisualVm,打开Tomcat进程监控，给VisualVm安装MBeans插件后，选择MBeans标签页可以对
+// JmxSink所有注册到JMX中的对象进行管理
 private[spark] class JmxSink(val property: Properties, val registry: MetricRegistry,
     securityMgr: SecurityManager) extends Sink {
 

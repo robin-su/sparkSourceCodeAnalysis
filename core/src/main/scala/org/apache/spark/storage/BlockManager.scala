@@ -593,10 +593,13 @@ private[spark] class BlockManager(
   }
 
   /**
+   * 从块管理器中获取块
+   *
    * Get block from local block manager as an iterator of Java objects.
    */
   def getLocalValues(blockId: BlockId): Option[BlockResult] = {
     logDebug(s"Getting local block $blockId")
+    // 从BlockInfoManager 中获取
     blockInfoManager.lockForReading(blockId) match {
       case None =>
         logDebug(s"Block $blockId was not found")

@@ -59,6 +59,7 @@ private[spark] class BroadcastManager(
 
   private val nextBroadcastId = new AtomicLong(0)
 
+//  broadcastManager.cachedValues 保存着所有的 broadcast 的值，它是一个Map结构的，key是强引用，value是虚引用（在垃圾回收时会被清理掉）。
   private[broadcast] val cachedValues = {
     new ReferenceMap(AbstractReferenceMap.HARD, AbstractReferenceMap.WEAK)
   }

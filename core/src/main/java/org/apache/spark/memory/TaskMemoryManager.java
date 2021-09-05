@@ -36,6 +36,8 @@ import org.apache.spark.unsafe.memory.MemoryBlock;
 import org.apache.spark.util.Utils;
 
 /**
+ * TaskMemoryManager管理由各个任务分配的内存。任务与TaskMemoryManager交互，永远不会直接与JVM范围的MemoryManager交互。
+ *
  * Manages the memory allocated by an individual task.
  * <p>
  * Most of the complexity in this class deals with encoding of off-heap addresses into 64-bit longs.

@@ -17,8 +17,13 @@
 
 package org.apache.spark.metrics.sink
 
+/** 对度量数据的输出 */
+
 private[spark] trait Sink {
+  // 启动Sink
   def start(): Unit
+//  停止Sink
   def stop(): Unit
+//  输出到目的地址
   def report(): Unit
 }

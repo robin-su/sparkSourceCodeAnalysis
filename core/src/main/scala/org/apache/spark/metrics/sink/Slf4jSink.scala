@@ -25,15 +25,19 @@ import com.codahale.metrics.{MetricRegistry, Slf4jReporter}
 import org.apache.spark.SecurityManager
 import org.apache.spark.metrics.MetricsSystem
 
+// 将度量输出到Slf4j规范的日志输出
 private[spark] class Slf4jSink(
     val property: Properties,
     val registry: MetricRegistry,
     securityMgr: SecurityManager)
   extends Sink {
+  // 默认的输出周期
   val SLF4J_DEFAULT_PERIOD = 10
+  // 输出周期单位
   val SLF4J_DEFAULT_UNIT = "SECONDS"
-
+  // 周期
   val SLF4J_KEY_PERIOD = "period"
+  // 单位
   val SLF4J_KEY_UNIT = "unit"
 
   val pollPeriod = Option(property.getProperty(SLF4J_KEY_PERIOD)) match {

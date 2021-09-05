@@ -67,6 +67,7 @@ class SparkConf(loadDefaults: Boolean) extends Cloneable with Logging with Seria
     _reader
   }
 
+  // 当loadDefault为true的时候，会从系统属性中家在Spark配置
   if (loadDefaults) {
     loadFromSystemProperties(false)
   }

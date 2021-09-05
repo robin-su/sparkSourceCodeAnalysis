@@ -50,9 +50,9 @@ private[spark] class LiveListenerBus(conf: SparkConf) {
 
   private[spark] val metrics = new LiveListenerBusMetrics(conf)
 
-  // Indicate if `start()` is called
+  // Indicate if `start()` is called  标记LiveListenerBus的启动状态的AtomicBoolean类型的变量
   private val started = new AtomicBoolean(false)
-  // Indicate if `stop()` is called
+  // Indicate if `stop()` is called   标记LiveListenerBus的停止状态的AtomicBoolean类型的变量
   private val stopped = new AtomicBoolean(false)
 
   /** A counter for dropped events. It will be reset every time we log it. */

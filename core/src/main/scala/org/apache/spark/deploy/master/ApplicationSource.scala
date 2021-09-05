@@ -21,11 +21,17 @@ import com.codahale.metrics.{Gauge, MetricRegistry}
 
 import org.apache.spark.metrics.source.Source
 
+/**
+ *  Gauge 是Metrics提供的用于估计度量值的特质
+ *
+ * @param application
+ */
 private[master] class ApplicationSource(val application: ApplicationInfo) extends Source {
   override val metricRegistry = new MetricRegistry()
   override val sourceName = "%s.%s.%s".format("application", application.desc.name,
     System.currentTimeMillis())
 
+//  注册应用状态
   metricRegistry.register(MetricRegistry.name("status"), new Gauge[String] {
     override def getValue: String = application.state.toString
   })
