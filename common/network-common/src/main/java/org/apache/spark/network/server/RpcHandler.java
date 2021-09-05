@@ -34,6 +34,8 @@ public abstract class RpcHandler {
   private static final RpcResponseCallback ONE_WAY_CALLBACK = new OneWayRpcCallback();
 
   /**
+   * 用来接受单一的RPC消息，具体处理逻辑需要子类去实现。
+   *
    * Receive a single RPC message. Any exception thrown while in this method will be sent back to
    * the client in string form as a standard RPC failure.
    *
@@ -44,7 +46,7 @@ public abstract class RpcHandler {
    *               of this RPC. This will always be the exact same object for a particular channel.
    * @param message The serialized bytes of the RPC.
    * @param callback Callback which should be invoked exactly once upon success or failure of the
-   *                 RPC.
+   *                 RPC.   用于对请求处理结束后进行回调，无论处结果成功还是失败，RpcResponseCallback都会被调用一次
    */
   public abstract void receive(
       TransportClient client,
@@ -82,6 +84,8 @@ public abstract class RpcHandler {
   }
 
   /**
+   * 从流中获取单个数据块。
+   *
    * Returns the StreamManager which contains the state about which streams are currently being
    * fetched by a TransportClient.
    */

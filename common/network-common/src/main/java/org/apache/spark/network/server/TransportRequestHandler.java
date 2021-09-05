@@ -126,7 +126,9 @@ public class TransportRequestHandler extends MessageHandler<RequestMessage> {
     }
     ManagedBuffer buf;
     try {
+      // 校验客户端是否有权限从给定的流中读取
       streamManager.checkAuthorization(reverseClient, req.streamChunkId.streamId);
+      // 获取单个块，由于单个的流只能与单个的TCP流连接关联，因此getChunk方法不能为了某个特殊的流而并行调用
       buf = streamManager.getChunk(req.streamChunkId.streamId, req.streamChunkId.chunkIndex);
     } catch (Exception e) {
       logger.error(String.format("Error opening block %s for request from %s",
