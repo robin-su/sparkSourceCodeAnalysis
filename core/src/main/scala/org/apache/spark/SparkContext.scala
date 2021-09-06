@@ -262,10 +262,13 @@ class SparkContext(config: SparkConf) extends Logging {
   private[spark] def env: SparkEnv = _env
 
   // Used to store a URL for each static file/jar together with the file's local timestamp
+  // 用于每个本地文件的URL与添加此文件到addedFiles时的时间戳之间的映射缓存
   private[spark] val addedFiles = new ConcurrentHashMap[String, Long]().asScala
+//  用于每个本地Jar文件的URL与添加此文件到addedJars时的时间戳之间的映射缓存
   private[spark] val addedJars = new ConcurrentHashMap[String, Long]().asScala
 
   // Keeps track of all persisted RDDs
+  // 用于对所有持久化的RDD保持跟踪
   private[spark] val persistentRdds = {
     val map: ConcurrentMap[Int, RDD[_]] = new MapMaker().weakValues().makeMap[Int, RDD[_]]()
     map.asScala
@@ -289,6 +292,7 @@ class SparkContext(config: SparkConf) extends Logging {
   private[spark] def executorMemory: Int = _executorMemory
 
   // Environment variables to pass to our executors.
+  // 用于存储环境变量，executorEnvs中的环境变量都将传递给执行任务的Executor使用
   private[spark] val executorEnvs = HashMap[String, String]()
 
   // Set SPARK_USER for user who is running SparkContext.
@@ -324,9 +328,10 @@ class SparkContext(config: SparkConf) extends Logging {
     _executorAllocationManager
 
   private[spark] def cleaner: Option[ContextCleaner] = _cleaner
-
+  // RDD计算过程中保存检查点时所需要的目录
   private[spark] var checkpointDir: Option[String] = None
 
+  // 由InheritableThreadLocal保护的线程本地变量，其中属性值可以沿用线程栈传递下去，供用于使用
   // Thread Local variable that can be used by users to pass information down the stack
   protected[spark] val localProperties = new InheritableThreadLocal[Properties] {
     override protected def childValue(parent: Properties): Properties = {
@@ -362,7 +367,7 @@ class SparkContext(config: SparkConf) extends Logging {
     Utils.setLogLevel(org.apache.log4j.Level.toLevel(upperCased))
   }
 
-  // 孤立代码块，反编译之后会看到，其实他们会写入到构造器中国呢
+  // 孤立代码块，反编译之后会看到，其实他们会写入到构造器中
   try {
     // 1.初始化 configuration
     _conf = config.clone()
@@ -395,10 +400,13 @@ class SparkContext(config: SparkConf) extends Logging {
 
     _conf.set("spark.executor.id", SparkContext.DRIVER_IDENTIFIER)
 
+    // 用于设置jar文件，当用户选择的部署模式时YARN时，_jars时由spark.jars属性指定的Jar文件和spark.yarn.dist.jars属性指定的
+    // jar文件的并集。其他模式下只采用由spark.jars属性指定的Jar文件。
     _jars = Utils.getUserJars(_conf)
     _files = _conf.getOption("spark.files").map(_.split(",")).map(_.filter(_.nonEmpty))
       .toSeq.flatten
 
+    // 事件日志的路径
     _eventLogDir =
       if (isEventLogEnabled) {
         val unresolvedDir = conf.get("spark.eventLog.dir", EventLoggingListener.DEFAULT_LOG_DIR)
