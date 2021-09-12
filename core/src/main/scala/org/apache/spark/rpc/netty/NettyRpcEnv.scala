@@ -467,6 +467,8 @@ private[rpc] class NettyRpcEnvFactory extends RpcEnvFactory with Logging {
   def create(config: RpcEnvConfig): RpcEnv = {
     val sparkConf = config.conf
     /**
+     * 此实例将用于RPC传输对象的序列化。
+     *
      * 在多线程中使用 JavaSerializerInstance 是安全的。 但是，如果我们打算在未来支持 KryoSerializer，
      * 我们必须使用 ThreadLocal 来存储 SerializerInstance
      */

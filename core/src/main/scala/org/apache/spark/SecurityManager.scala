@@ -92,6 +92,11 @@ private[spark] class SecurityManager(
   setViewAclsGroups(sparkConf.get("spark.ui.view.acls.groups", ""));
   setModifyAclsGroups(sparkConf.get("spark.modify.acls.groups", ""));
 
+  /**
+   * 密钥。在YARN模式下，首先使用sparkCookie从Hadoop UGI中获取密钥。如果Hadoop UGI没有保存密钥，
+   * 则生成新的密钥（密钥长度可以通过spark. authenticate.secretBitLength属性指定）并存入Hadoop UGI。
+   * 其他模式下，则需要设置环境变量_SPARK_AUTH_SECRET（优先级更高）或spark.authenticate.secret属性指定。
+   */
   private var secretKey: String = _
   logInfo("SecurityManager: authentication " + (if (authOn) "enabled" else "disabled") +
     "; ui acls " + (if (aclsOn) "enabled" else "disabled") +
@@ -104,6 +109,7 @@ private[spark] class SecurityManager(
   // This is needed by the HTTP client fetching from the HttpServer. Put here so its
   // only set once.
   if (authOn) {
+    //
     Authenticator.setDefault(
       new Authenticator() {
         override def getPasswordAuthentication(): PasswordAuthentication = {

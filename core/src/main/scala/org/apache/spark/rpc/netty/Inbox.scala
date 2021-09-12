@@ -63,17 +63,26 @@ private[netty] class Inbox(
 
   inbox =>  // Give this an alias so we can use it more clearly in closures.
 
+  /**
+   * 消息列表。用于缓存需要由对应RpcEndpoint处理的消息，即与Inbox在同一EndpointData中的RpcEndpoint
+   * LinkedList本身不是线程安全的，所以为了增加并发安全性，需要通过同步保护。
+   */
   @GuardedBy("this")
   protected val messages = new java.util.LinkedList[InboxMessage]()
 
   /** True if the inbox (and its associated endpoint) is stopped. */
   @GuardedBy("this")
   private var stopped = false
-
+  /**
+   * 是否允许多个线程同时处理messages中的消息。
+   */
   /** Allow multiple threads to process messages at the same time. */
   @GuardedBy("this")
   private var enableConcurrent = false
 
+  /**
+   * numActiveThreads：激活线程的数量，即正在处理messages中消息的线程数量。
+   */
   /** The number of threads processing messages for this inbox. */
   @GuardedBy("this")
   private var numActiveThreads = 0
@@ -89,11 +98,18 @@ private[netty] class Inbox(
   def process(dispatcher: Dispatcher): Unit = {
     var message: InboxMessage = null
     inbox.synchronized {
+      /**
+       * 如果不允许多个线程同时处理messages中的消息（enableConcurrent为false），
+       * 并且当前激活线程数（numActiveThreads）不为0，这说明已经有线程在处理消息，
+       * 所以当前线程不允许再去处理消息（使用return返回）。
+       */
       if (!enableConcurrent && numActiveThreads != 0) {
         return
       }
       // 从队列头部获取消息
       message = messages.poll()
+//    如果有消息未处理，则当前线程需要处理此消息，因而算是一个新的激活线程（需要将numActiveThreads加1）。
+      //    如果messages中没有消息了（一般发生在多线程情况下），则直接返回。
       if (message != null) {
         numActiveThreads += 1
       } else {
@@ -101,7 +117,17 @@ private[netty] class Inbox(
       }
     }
     while (true) {
+      /**
+       * 根据消息类型进行匹配，并执行对应的逻辑。这里有个小技巧值得借鉴，那就是匹配执行的过程中也许会发生错误，
+       * 当发生错误的时候，我们希望当前Inbox所对应RpcEndpoint的错误处理方法onError可以接收到这些错误信息。
+       * Inbox的safelyCall方法给我们提供了这方面的实现
+       */
       safelyCall(endpoint) {
+        /**
+         * 如果不允许多个线程同时处理messages中的消息并且当前激活的线程数多于1个，
+         * 那么需要当前线程退出并将numActiveThreads减1；如果messages已经没有消息要处理了，
+         * 这说明当前线程无论如何也该返回并将numActiveThreads减1。
+         */
         message match {
           case RpcMessage(_sender, content, context) =>
             try {

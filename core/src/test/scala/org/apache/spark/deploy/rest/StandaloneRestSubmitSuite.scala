@@ -530,6 +530,9 @@ class StandaloneRestSubmitSuite extends SparkFunSuite with BeforeAndAfterEach {
 }
 
 /**
+ *
+ * DummyMaster（Dummy意为虚拟的、假的或傀儡的）正如其名字一样，不是NettyRpcEnv中具有真正用途的RpcEndpoint，而只用于测试
+ *
  * A mock standalone Master that responds with dummy messages.
  * In all responses, the success parameter is always true.
  */

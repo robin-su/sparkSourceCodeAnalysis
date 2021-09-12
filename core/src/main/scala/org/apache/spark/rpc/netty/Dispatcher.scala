@@ -49,14 +49,16 @@ private[netty] class Dispatcher(nettyEnv: NettyRpcEnv, numUsableCores: Int) exte
     val inbox = new Inbox(ref, endpoint)
   }
 
-  /* 负责存储 endpoint name 和 EndpointData 的映射关系 */
+  /* 端点实例名称与端点数据EndpointData之间映射关系的缓存。有了这个缓存，就可以使用端点名称从中快速获取或删除EndpointData了 */
   private val endpoints: ConcurrentMap[String, EndpointData] =
     new ConcurrentHashMap[String, EndpointData]
-  /*  RpcEndpoint 和 RpcEndpointRef 的映射关系 */
+  /*  端点实例RpcEndpoint与端点实例引用RpcEndpointRef之间映射关系的缓存。有了这个缓存，就可以使用端点实例从中快速获取或删除端点实例引用了。 */
   private val endpointRefs: ConcurrentMap[RpcEndpoint, RpcEndpointRef] =
     new ConcurrentHashMap[RpcEndpoint, RpcEndpointRef]
 
   /**
+   * 存储端点数据EndpointData的阻塞队列。只有Inbox中有消息的EndpointData才会被放入此阻塞队列。
+   *
    * receivers 是一个 LinkedBlockingQueue[EndpointData] 消息阻塞队列，用于存放 EndpointData 对象。它主要用于追踪
    * 那些可能会包含需要处理消息receiver（即EndpointData）。在post消息到Dispatcher时，一般会先post 到 EndpointData 的 Inbox 中，
    * 然后，再将 EndpointData对象放入 receivers 中
@@ -65,6 +67,7 @@ private[netty] class Dispatcher(nettyEnv: NettyRpcEnv, numUsableCores: Int) exte
   private val receivers = new LinkedBlockingQueue[EndpointData]
 
   /**
+   * Dispatcher是否停止的状态。
    * True if the dispatcher has been stopped. Once stopped, all messages posted will be bounced
    * immediately.
    * stopped 标志 Dispatcher 是否已经停止了
@@ -255,10 +258,19 @@ private[netty] class Dispatcher(nettyEnv: NettyRpcEnv, numUsableCores: Int) exte
       try {
         while (true) {
           try {
+            /**
+             * 由于receivers是个阻塞队列，所以当receivers中没有EndpointData时，MessageLoop线程会被阻塞。
+             */
             // 从receivers对象中获取EndpointData数据
             val data = receivers.take()
             // 若取到对象是空的EndpointData
             if (data == PoisonPill) {
+              /**
+               * 如果取到的EndpointData是“毒药”（PoisonPill），那么此MessageLoop线程将退出（通过return语句）。
+               * 这里有个动作就是将PoisonPill重新放入到receivers中，这是因为threadpool线程池极有可能不止一个MessageLoop线程，
+               * 为了让大家都“毒发身亡”，还需要把“毒药”放回到receivers中，这样其他“活着”的线程就会再次误食“毒药”，
+               * 达到所有MessageLoop线程都结束的效果。
+               */
               // 将PoisonPill对象喂给receivers吃，当threadpool执行MessageLoop任务时，取到PoisonPill，马上退出
               // 线程也就死掉了。PoisonPill命名很形象，关闭线程池的方式也是优雅的，是值得我们在工作中去学习和应用的。
               // Put PoisonPill back so that other MessageLoops can see it.

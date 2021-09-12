@@ -48,6 +48,9 @@ private[spark] abstract class RpcEndpointRef(conf: SparkConf)
   def name: String
 
   /**
+   * 发送单向异步的消息。所谓“单向”就是发送完后就会忘记此次发送，不会有任何状态要记录，
+   * 也不会期望得到服务端的回复。send采用了at-most-once的投递规则
+   *
    * 抽象方法，发送单向的异步消息，满足 即发即忘 语义。
    * Sends a one-way asynchronous message. Fire-and-forget semantics.
    */

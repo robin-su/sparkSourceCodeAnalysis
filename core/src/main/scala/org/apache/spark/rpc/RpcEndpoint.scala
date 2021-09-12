@@ -29,6 +29,9 @@ private[spark] trait RpcEnvFactory {
 }
 
 /**
+ *  RPC端点是对Spark的RPC通信实体的统一抽象，所有运行于RPC框架之上的实体都应该继承RpcEndpoint。
+ *  RpcEndpoint是对能够处理RPC请求，给某一特定服务提供本地调用及跨节点调用的RPC组件的抽象。
+ *
  * An end point for the RPC that defines what functions to trigger given a message.
  *
  * It is guaranteed that `onStart`, `receive` and `onStop` will be called in sequence.
@@ -67,6 +70,8 @@ private[spark] trait RpcEndpoint {
   }
 
   /**
+   * 接收消息并处理，但不需要给客户端回复。
+   *
    * 处理从RpcEndpointRef.send 或 RpcCallContext.reply 过来的消息，如果接收到一个未匹配的消息，
    * 会抛出 SparkException 并且发送给onError 方法
    *
@@ -78,6 +83,8 @@ private[spark] trait RpcEndpoint {
   }
 
   /**
+   * 接收消息并处理，需要给客户端回复。回复是通过RpcCall-Context来实现的。
+   *
    * 处理从RpcEndpointRef.ask发过来的消息，如果接收到一个未匹配的消息，会抛出 SparkException 并且发送给onError 方法
    * Process messages from `RpcEndpointRef.ask`. If receiving a unmatched message,
    * `SparkException` will be thrown and sent to `onError`.
