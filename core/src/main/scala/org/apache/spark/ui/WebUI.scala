@@ -49,16 +49,24 @@ private[spark] abstract class WebUI(
     name: String = "")
   extends Logging {
 
+  // WebUITab的缓存数组
   protected val tabs = ArrayBuffer[WebUITab]()
+//  ServletContextHandler的缓冲数组
   protected val handlers = ArrayBuffer[ServletContextHandler]()
+//  WebUIPage与ServletContextHandler缓冲数组之间的映射关系
   protected val pageToHandlers = new HashMap[WebUIPage, ArrayBuffer[ServletContextHandler]]
+//  用于缓存ServerInfo,即WebUI的Jetty服务信息
   protected var serverInfo: Option[ServerInfo] = None
+  // 当前WebUI的jetty服务的主机名。优先采用系统环境变量SPARK_PUBLIC_DNS指定的主机名，否则采用spark.driver.host属性指定的host
   protected val publicHostName = Option(conf.getenv("SPARK_PUBLIC_DNS")).getOrElse(
     conf.get(DRIVER_HOST_ADDRESS))
+//  过滤了$符号的当前类的简单名称
   private val className = Utils.getFormattedClassName(this)
 
   def getBasePath: String = basePath
+//  获取tab中所有的WebUITab
   def getTabs: Seq[WebUITab] = tabs
+//  获取handler中所有的ServletContextHandler
   def getHandlers: Seq[ServletContextHandler] = handlers
   def getSecurityManager: SecurityManager = securityManager
 
@@ -66,6 +74,7 @@ private[spark] abstract class WebUI(
     handlers.map(new DelegatingServletContextHandler(_))
   }
 
+  // 向tabs中添加WebUITab
   /** Attaches a tab to this UI, along with all of its attached pages. */
   def attachTab(tab: WebUITab): Unit = {
     tab.pages.foreach(attachPage)
@@ -86,6 +95,7 @@ private[spark] abstract class WebUI(
   /** Attaches a page to this UI. */
   def attachPage(page: WebUIPage): Unit = {
     val pagePath = "/" + page.prefix
+//    给WebUIPage创建与render与renderJson两个方法分别关联的ServletContextHandler
     val renderHandler = createServletHandler(pagePath,
       (request: HttpServletRequest) => page.render(request), securityManager, conf, basePath)
     val renderJsonHandler = createServletHandler(pagePath.stripSuffix("/") + "/json",
@@ -97,6 +107,10 @@ private[spark] abstract class WebUI(
     handlers += renderJsonHandler
   }
 
+  /**
+   * 给handlers缓存数组中添加ServletContextHandler，并且将此ServletContextHandler通过ServerInfo的addHandler方法
+   * 添加到Jetty服务器中。
+   */
   /** Attaches a handler to this UI. */
   def attachHandler(handler: ServletContextHandler): Unit = {
     handlers += handler
@@ -111,6 +125,10 @@ private[spark] abstract class WebUI(
     attachHandler(ctx)
   }
 
+  /**
+   * 从handlers缓存数组中移除ServletContextHandler，并且将此ServletContextHandler通过ServerInfo的removeHandler方法从
+   * Jetty服务中移除。
+   */
   /** Detaches a handler from this UI. */
   def detachHandler(handler: ServletContextHandler): Unit = {
     handlers -= handler
@@ -137,6 +155,7 @@ private[spark] abstract class WebUI(
   }
 
   /** A hook to initialize components of the UI */
+  // 用于初始化WebUI服务中的所有组件。
   def initialize(): Unit
 
   /** Binds to the HTTP server behind this web interface. */
@@ -169,22 +188,35 @@ private[spark] abstract class WebUI(
 
 
 /**
+ * 标签页
+ * prefix: 当前WebUITab的前缀，prefix将与上级节点的路径一起构成当前WebUITab的访问路径
+ *
  * A tab that represents a collection of pages.
  * The prefix is appended to the parent address to form a full path, and must not contain slashes.
  */
 private[spark] abstract class WebUITab(parent: WebUI, val prefix: String) {
+  // 当前WebUITab所包含的WebUIPage的缓冲数组
   val pages = ArrayBuffer[WebUIPage]()
+  // 当前WebUITab的名称。name实际是将prefix的首字母转换成大写字母后取得
   val name = prefix.capitalize
 
+//  首先将当前WebUITab的前缀与WebUIPage的前缀拼接，作为WebUIPage的访问路径，然后向pages中添加WebUIPage
   /** Attach a page to this tab. This prepends the page's prefix with the tab's own prefix. */
   def attachPage(page: WebUIPage) {
     page.prefix = (prefix + "/" + page.prefix).stripSuffix("/")
     pages += page
   }
 
+  /**
+   *  获取父亲WebUI中的所有WebUITab
+   */
   /** Get a list of header tabs from the parent UI. */
   def headerTabs: Seq[WebUITab] = parent.getTabs
 
+  /**
+   * 获取父亲WebUI的基本路径
+   * @return
+   */
   def basePath: String = parent.getBasePath
 }
 
@@ -198,7 +230,9 @@ private[spark] abstract class WebUITab(parent: WebUI, val prefix: String) {
  * to form a relative path. The prefix must not contain slashes.
  */
 private[spark] abstract class WebUIPage(var prefix: String) {
+  // 渲染页面
   def render(request: HttpServletRequest): Seq[Node]
+  // 生成JSON
   def renderJson(request: HttpServletRequest): JValue = JNothing
 }
 

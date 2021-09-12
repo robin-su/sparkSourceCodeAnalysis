@@ -66,12 +66,14 @@ private[spark] class ContextCleaner(sc: SparkContext) extends Logging {
   private val referenceBuffer =
     Collections.newSetFromMap[CleanupTaskWeakReference](new ConcurrentHashMap)
 
+//  缓存顶级的AnyRef引用。
   private val referenceQueue = new ReferenceQueue[AnyRef]
-
+//  缓存清理工作的监听器数组。
   private val listeners = new ConcurrentLinkedQueue[CleanerListener]()
-
+//  用于具体清理工作的线程。此线程为守护线程，名称为Spark Context Cleaner。
   private val cleaningThread = new Thread() { override def run() { keepCleaning() }}
 
+  // 类型为ScheduledExecutorService，用于执行GC（Garbage Collection，垃圾收集）的调度线程池，此线程池只包含一个线程，启动的线程名称以context-cleaner-periodic-gc开头。
   private val periodicGCService: ScheduledExecutorService =
     ThreadUtils.newDaemonSingleThreadScheduledExecutor("context-cleaner-periodic-gc")
 
@@ -87,6 +89,8 @@ private[spark] class ContextCleaner(sc: SparkContext) extends Logging {
     sc.conf.getTimeAsSeconds("spark.cleaner.periodicGC.interval", "30min")
 
   /**
+   * 清理非Shuffle的其他数据是否是阻塞式的。可通过spark. cleaner.referenceTracking.blocking属性进行配置，默认是true。
+   *
    * Whether the cleaning thread will block on cleanup tasks (other than shuffle, which
    * is controlled by the `spark.cleaner.referenceTracking.blocking.shuffle` parameter).
    *
@@ -100,6 +104,9 @@ private[spark] class ContextCleaner(sc: SparkContext) extends Logging {
     "spark.cleaner.referenceTracking.blocking", true)
 
   /**
+   * 清理Shuffle数据是否是阻塞式的。可通过spark. cleaner.referenceTracking.blocking.shuffle属性进行配置，默认是false。
+   * 清理Shuffle数据包括清理MapOutputTracker中指定ShuffleId对应的map任务状态和ShuffleManager中注册的ShuffleId对应的Shuffle元数据。
+   *
    * Whether the cleaning thread will block on shuffle cleanup tasks.
    *
    * When context cleaner is configured to block on every delete request, it can throw timeout
@@ -121,10 +128,14 @@ private[spark] class ContextCleaner(sc: SparkContext) extends Logging {
 
   /** Start the cleaner. */
   def start(): Unit = {
+//    将cleaningThread设置为守护线程，并指定名称为Spark Context Cleaner
     cleaningThread.setDaemon(true)
     cleaningThread.setName("Spark Context Cleaner")
+//    启动cleaningThread。
     cleaningThread.start()
+//    给periodicGCService设置以periodicGCInterval作为时间间隔定时进行GC操作的任务。
     periodicGCService.scheduleAtFixedRate(new Runnable {
+//   除了GC的定时器，ContextCleaner其余部分的工作原理和listenerBus一样（也采用监听器模式，由异步线程来处理）
       override def run(): Unit = System.gc()
     }, periodicGCInterval, periodicGCInterval, TimeUnit.SECONDS)
   }
@@ -214,7 +225,10 @@ private[spark] class ContextCleaner(sc: SparkContext) extends Logging {
   def doCleanupRDD(rddId: Int, blocking: Boolean): Unit = {
     try {
       logDebug("Cleaning RDD " + rddId)
+//      1）调用SparkContext的unpersistRDD方法从内存或磁盘中移除RDD。
+//      2）从persistentRdds中移除对RDD的跟踪。
       sc.unpersistRDD(rddId, blocking)
+//      调用所有监听器的rddCleaned方法。
       listeners.asScala.foreach(_.rddCleaned(rddId))
       logInfo("Cleaned RDD " + rddId)
     } catch {

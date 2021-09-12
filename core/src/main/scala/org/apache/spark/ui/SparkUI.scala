@@ -58,6 +58,7 @@ private[spark] class SparkUI private (
 
   /** Initialize all components of the server. */
   def initialize(): Unit = {
+    // 1.构建页面布局并给每个WebUITab中所有WebUIPage创建对应的ServletContextHandler
     val jobsTab = new JobsTab(this, store)
     attachTab(jobsTab)
     val stagesTab = new StagesTab(this, store)
@@ -65,7 +66,9 @@ private[spark] class SparkUI private (
     attachTab(new StorageTab(this, store))
     attachTab(new EnvironmentTab(this, store))
     attachTab(new ExecutorsTab(this))
+//    创建度静态目录org/apache/spark/ui/static提供文件的ServletContextHandler，并使用attachHandler方法追加刀到SparkUI的服务中
     addStaticHandler(SparkUI.STATIC_RESOURCE_DIR)
+//    创建几个将用户对源路径的请求重定向到目标路径的ServletContextHandler，例如，将用户对根路径"/"的请求重定向到目标路径"/jobs/"的ServletContextHandler
     attachHandler(createRedirectHandler("/", "/jobs/", basePath = basePath))
     attachHandler(ApiRootResource.getServletHandler(this))
 

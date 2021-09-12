@@ -515,6 +515,7 @@ class SparkContext(config: SparkConf) extends Logging {
 
     // Create and start the scheduler
     // 14. 创建 task scheduler 和 scheduler backend
+    // 返回SchedulerBackend和TaskScheduler的元组
     val (sched, ts) = SparkContext.createTaskScheduler(this, master, deployMode)
     _schedulerBackend = sched
     _taskScheduler = ts
@@ -522,6 +523,8 @@ class SparkContext(config: SparkConf) extends Logging {
     _dagScheduler = new DAGScheduler(this)
     //  _heartbeatReceiver 是一个 RpcEndPointRef 对象，其请求最终会被 HeartbeatReceiver（Endpoint）接收并处理。
     //  即org.apache.spark.HeartbeatReceiver#receiveAndReply方法：
+    // 向HeartbeatReceiver发送TaskSchedulerIsSet，表示SparkContext的_taskSchduler属性已经持有了TaskScheduler的引用
+    // HeartbeatReceiver接收到TaskSchedulerlsSet消息后，将获取SparkContext的_taskScheduler属性设置到自身的scheduler属性中
     _heartbeatReceiver.ask[Boolean](TaskSchedulerIsSet)
 
     // start TaskScheduler after taskScheduler sets DAGScheduler reference in DAGScheduler's
@@ -588,6 +591,7 @@ class SparkContext(config: SparkConf) extends Logging {
       }
     _cleaner.foreach(_.start())
     // 26. 建立并启动 listener bus
+    // 用户自定义SparkListener
     setupAndStartListenerBus()
     // 27.  task scheduler 已就绪，发送环境已更新请求
     postEnvironmentUpdate()
@@ -610,6 +614,7 @@ class SparkContext(config: SparkConf) extends Logging {
     // unfinished event logs around after the JVM exits cleanly. It doesn't help if the JVM
     // is killed, though.
     logDebug("Adding shutdown hook") // force eager creation of logger
+    // 添加SparkContext的关闭钩子
     _shutdownHookRef = ShutdownHookManager.addShutdownHook(
       // 33. 设置 shutdown hook， 在spark context 关闭时，要做的回调操作
       ShutdownHookManager.SPARK_CONTEXT_SHUTDOWN_PRIORITY) { () =>
@@ -2105,8 +2110,11 @@ class SparkContext(config: SparkConf) extends Logging {
     if (conf.getBoolean("spark.logLineage", false)) {
       logInfo("RDD's recursive dependencies:\n" + rdd.toDebugString)
     }
+
+    // 将DAG及RDD提交给DagScheduler进行调度
     dagScheduler.runJob(rdd, cleanedFunc, partitions, callSite, resultHandler, localProperties.get)
     progressBar.foreach(_.finishAll())
+    // 保存检查点
     rdd.doCheckpoint()
   }
 
@@ -2430,8 +2438,10 @@ class SparkContext(config: SparkConf) extends Logging {
    */
   private def setupAndStartListenerBus(): Unit = {
     try {
+      // 从spark.extraListeners属性中获取用户自定义的SparkListener的类名。用户可以通过逗号分隔多个自定义SparkListener。
       conf.get(EXTRA_LISTENERS).foreach { classNames =>
         val listeners = Utils.loadExtensions(classOf[SparkListenerInterface], classNames, conf)
+//        通过反射生成每一个自定义SparkListener的实例，并添加到事件总线的监听器列表中。
         listeners.foreach { listener =>
           listenerBus.addToSharedQueue(listener)
           logInfo(s"Registered listener ${listener.getClass().getName()}")
@@ -2447,6 +2457,7 @@ class SparkContext(config: SparkConf) extends Logging {
     }
 
     listenerBus.start(this, _env.metricsSystem)
+//    启动事件总线，并将_listenerBusStarted置为true。
     _listenerBusStarted = true
   }
 
@@ -2469,9 +2480,12 @@ class SparkContext(config: SparkConf) extends Logging {
       val schedulingMode = getSchedulingMode.toString
       val addedJarPaths = addedJars.keys.toSeq
       val addedFilePaths = addedFiles.keys.toSeq
+//      将JVM参数、Spark属性、系统属性、classPath等信息设置为环境变量
       val environmentDetails = SparkEnv.environmentDetails(conf, schedulingMode, addedJarPaths,
         addedFilePaths)
+//      生成SparkListenerEnvironmentUpdate
       val environmentUpdate = SparkListenerEnvironmentUpdate(environmentDetails)
+//      把事件投递到事件总线
       listenerBus.post(environmentUpdate)
     }
   }
@@ -2487,15 +2501,19 @@ class SparkContext(config: SparkConf) extends Logging {
  * various Spark features.
  */
 object SparkContext extends Logging {
+
+//  有效的日志级别。VALID_LOG_LEVELS包括ALL、DEBUG、ERROR、FATAL、INFO、OFF、TRACE、WARN等。
   private val VALID_LOG_LEVELS =
     Set("ALL", "DEBUG", "ERROR", "FATAL", "INFO", "OFF", "TRACE", "WARN")
 
   /**
+   * 对SparkContext进行构造时使用的锁，以此保证构造SparkContext的过程是线程安全的。
    * Lock that guards access to global variables that track SparkContext construction.
    */
   private val SPARK_CONTEXT_CONSTRUCTOR_LOCK = new Object()
 
   /**
+   * 类型为AtomicReference[SparkContext]，用于保存激活的Spark-Context。
    * The active, fully-constructed SparkContext.  If no SparkContext is active, then this is `null`.
    *
    * Access to this field is guarded by SPARK_CONTEXT_CONSTRUCTOR_LOCK.
@@ -2504,6 +2522,8 @@ object SparkContext extends Logging {
     new AtomicReference[SparkContext](null)
 
   /**
+   * 标记当前正在构造SparkContext。
+   *
    * Points to a partially-constructed SparkContext if some thread is in the SparkContext
    * constructor, or `None` if no SparkContext is being constructed.
    *
