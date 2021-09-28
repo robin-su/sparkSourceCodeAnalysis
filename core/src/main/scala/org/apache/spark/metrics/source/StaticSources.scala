@@ -23,10 +23,13 @@ import org.apache.spark.annotation.Experimental
 
 private[spark] object StaticSources {
   /**
+   *
+   * 将静态的度量来源CodegenMetrics和HiveCatalogMetrics注册到MetricRegistry
+   *
    * The set of all static sources. These sources may be reported to from any class, including
    * static classes, without requiring reference to a SparkEnv.
    */
-  val allSources = Seq(CodegenMetrics, HiveCatalogMetrics)
+  val allSouStaticSourcesrces = Seq(CodegenMetrics, HiveCatalogMetrics)
 }
 
 /**

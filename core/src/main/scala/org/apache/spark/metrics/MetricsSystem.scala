@@ -68,20 +68,40 @@ import org.apache.spark.util.Utils
  * [options] represent the specific property of this source or sink.
  */
 private[spark] class MetricsSystem private (
-    val instance: String,
+    val instance: String, // 度量系统的实例名
     conf: SparkConf,
     securityMgr: SecurityManager)
   extends Logging {
 
+  /**
+   * 度量配置。metricsConfig的类型为MetricsConfig，主要提供对度量配置的设置、加载、转换等功能。
+   * MetricsConfig中的度量配置包括了Sink和Source，因此MetricsSystem将根据MetricsConfig构建度量系统的所有Sink和Source。
+   */
   private[this] val metricsConfig = new MetricsConfig(conf)
 
+  /**
+   * Sink的数组。Sink（即度量输出）sinks用于缓存所有注册到MetricsSystem的度量输出。
+   */
   private val sinks = new mutable.ArrayBuffer[Sink]
+  /**
+   * Source的数组：即度量的采集或来源，sources用于缓存所有注册到MetricsSystem的Source。
+   */
   private val sources = new mutable.ArrayBuffer[Source]
+  /**
+   * 度量注册点MetricRegistry。Source和Sink实际都是通过MetricRegistry注册到Metrics的度量仓库中的。
+   * Metrics是codahale提供的第三方度量仓库，这里的MetricRegistry是Metrics提供的API
+   */
   private val registry = new MetricRegistry()
 
+  /**
+   * 度量注册点MetricRegistry。Source和Sink实际都是通过MetricRegistry注册到Metrics的度量仓库中的。
+   * Metrics是codahale提供的第三方度量仓库，这里的MetricRegistry是Metrics提供的API
+   */
   private var running: Boolean = false
 
-  // Treat MetricsServlet as a special sink as it should be exposed to add handlers to web ui
+  /**
+   * metricsServlet将在添加ServletContextHandler后通过WebUI展示。metricsServlet的类型是Option[MetricsServlet]。
+   */
   private var metricsServlet: Option[MetricsServlet] = None
 
   /**
@@ -96,6 +116,7 @@ private[spark] class MetricsSystem private (
 
   def start(registerStaticSources: Boolean = true) {
     require(!running, "Attempting to start a MetricsSystem that is already running")
+    // 将当前MetricsSystem的running字段置为true，即表示MetricsSystem已经处于运行状态。
     running = true
     if (registerStaticSources) {
       StaticSources.allSources.foreach(registerSource)
@@ -119,6 +140,8 @@ private[spark] class MetricsSystem private (
   }
 
   /**
+   * 1.构建度量源的注册名
+   *
    * Build a name that uniquely identifies each metric source.
    * The name is structured as follows: <app ID>.<executor ID (or "driver")>.<source name>.
    * If either ID is not available, this defaults to just using <source name>.
@@ -128,10 +151,11 @@ private[spark] class MetricsSystem private (
    *         application, executor/driver and metric source.
    */
   private[spark] def buildRegistryName(source: Source): String = {
-    
+//    度量命名空间
     val metricsNamespace = conf.get(METRICS_NAMESPACE).orElse(conf.getOption("spark.app.id"))
-
+//    当前Executor的身份标识
     val executorId = conf.getOption("spark.executor.id")
+//    调用MetricRegistry的name方法
     val defaultName = MetricRegistry.name(source.sourceName)
 
     if (instance == "driver" || instance == "executor") {
@@ -156,6 +180,7 @@ private[spark] class MetricsSystem private (
   def getSourcesByName(sourceName: String): Seq[Source] =
     sources.filter(_.sourceName == sourceName)
 
+  // 用于向MetricsSystem中注册度量源
   def registerSource(source: Source) {
     sources += source
     try {

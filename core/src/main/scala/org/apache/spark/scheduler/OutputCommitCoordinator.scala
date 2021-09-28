@@ -34,6 +34,11 @@ private case class AskPermissionToCommitOutput(
     attemptNumber: Int)
 
 /**
+ * 当Spark应用程序使用了Spark SQL（包括Hive）或者需要将任务的输出保存到HDFS时，就会用到输出提交协调器OutputCommitCoordinator,
+ * OutputCommitCoordinator将决定任务是否可以提交输出到HDFS。无论是Driver还是Executor，在SparkEnv中都包含了子组件OutputCommitCoordinator。
+ * 在Driver上注册了OutputCommitCoordinatorEndpoint，所有Executor上的OutputCommitCoordinator都是通过OutputCommitCoordinatorEndpoint
+ * 的RpcEndpointRef来询问Driver上的OutputCommitCoordinator，是否能够将输出提交到HDFS。
+ *
  * Authority that decides whether tasks can commit output to HDFS. Uses a "first committer wins"
  * policy.
  *

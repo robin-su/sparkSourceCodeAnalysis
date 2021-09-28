@@ -296,35 +296,61 @@ object SparkEnv extends Logging {
       RpcEndpointRef = {
       if (isDriver) {
         logInfo("Registering " + name)
+        // 若当前实例是Driver,则Dispather注册Endpoint
         rpcEnv.setupEndpoint(name, endpointCreator)
       } else {
+        // 如果是Executor，则向远端的NettyRpcEnv询问获取相关RpcEndpoint的RpcEndpointRef
         RpcUtils.makeDriverRef(name, conf, rpcEnv)
       }
     }
 
     val broadcastManager = new BroadcastManager(isDriver, conf, securityManager)
 
+    /**
+     * mapOutputTracker用于跟踪map任务的输出状态，此状态便于reduce任务定位map输出结果所在的节点地址，进而获取中间输出结果.
+     * 每个map任务或者reduce任务都会有其唯一标识，分别为mapId和reduceId。每个reduce任务的输入可能是多个map任务的输出，
+     * reduce会到各个map任务所在的节点上拉取Block，这一过程叫做Shuffle。每次Shuffle都有唯一的标识shuffleId。
+     */
     val mapOutputTracker = if (isDriver) {
+      /**
+       * 如果当前应用程序是Driver，则创建MapOutputTrackerMaster，然后创建MapOutput TrackerMasterEndpoint，并且注册到Dispatcher中，注册名为MapOutputTracker。
+       */
       new MapOutputTrackerMaster(conf, broadcastManager, isLocal)
     } else {
+      /**
+       * 如果当前应用程序是Executor，则创建MapOutputTrackerWorker，并从远端Driver实例的NettyRpcEnv的Dispatcher中查找MapOutputTrackerMasterEndpoint的引用。
+       */
       new MapOutputTrackerWorker(conf)
     }
 
+
     // Have to assign trackerEndpoint after initialization as MapOutputTrackerEndpoint
     // requires the MapOutputTracker itself
+
     mapOutputTracker.trackerEndpoint = registerOrLookupEndpoint(MapOutputTracker.ENDPOINT_NAME,
       new MapOutputTrackerMasterEndpoint(
         rpcEnv, mapOutputTracker.asInstanceOf[MapOutputTrackerMaster], conf))
 
+    /**
+     * 存储体系中最重要的组件包括Shuffle管理器ShuffleManager、内存管理器MemoryManager、块传输服务BlockTransferService、
+     * 对所有BlockManager进行管理的BlockManagerMaster、磁盘块管理器DiskBlockManager、块锁管理器BlockInfoManager
+     * 及块管理器BlockManage
+     */
     // Let the user specify short names for shuffle managers
     val shortShuffleMgrNames = Map(
       "sort" -> classOf[org.apache.spark.shuffle.sort.SortShuffleManager].getName,
       "tungsten-sort" -> classOf[org.apache.spark.shuffle.sort.SortShuffleManager].getName)
+    // 根据spark.shuffle.manager属性，实例化ShuffleManager。
     val shuffleMgrName = conf.get("spark.shuffle.manager", "sort")
     val shuffleMgrClass =
       shortShuffleMgrNames.getOrElse(shuffleMgrName.toLowerCase(Locale.ROOT), shuffleMgrName)
     val shuffleManager = instantiateClass[ShuffleManager](shuffleMgrClass)
 
+    /**
+     * MemoryManager的主要实现有StaticMemoryManager和UnifiedMemoryManager。
+     * StaticMemoryManager是Spark早期版本遗留下来的内存管理器实现，可以配置spark.
+     * memory.useLegacyMode属性来指定，该属性默认为false，因此默认的内存管理器是UnifiedMemoryManager。
+     */
     val useLegacyMemoryManager = conf.getBoolean("spark.memory.useLegacyMode", false)
     val memoryManager: MemoryManager =
       if (useLegacyMemoryManager) {
@@ -333,32 +359,57 @@ object SparkEnv extends Logging {
         UnifiedMemoryManager(conf, numUsableCores)
       }
 
+    /**
+     * 获取当前SparkEnv的块传输服务BlockTransferService对外提供的端口号。如果当前实例是Driver，
+     * 则从SparkConf中获取由常量DRIVER_BLOCK_MANAGER_PORT指定的端口。如果当前实例是Executor，
+     * 则从SparkConf中获取由常量BLOCK_MANAGER_PORT指定的端口。这两个常量的定义如下。
+     */
     val blockManagerPort = if (isDriver) {
       conf.get(DRIVER_BLOCK_MANAGER_PORT)
     } else {
       conf.get(BLOCK_MANAGER_PORT)
     }
 
+    /**
+     * 创建块传输服务BlockTransferService。这里使用的是BlockTransferService的子类NettyBlockTransferService,
+     * NettyBlockTransferService将提供对外的块传输服务。也正是因为MapOutputTracker与NettyBlockTransferService的配合，
+     * 才实现了Spark的Shuffle。
+     */
     val blockTransferService =
       new NettyBlockTransferService(conf, securityManager, bindAddress, advertiseAddress,
         blockManagerPort, numUsableCores)
 
+    /**
+     * 查找或注册BlockManagerMasterEndpoint。这里的registerOrLookupEndpoint方法
+     * 创建BlockManagerMaste
+     */
     val blockManagerMaster = new BlockManagerMaster(registerOrLookupEndpoint(
       BlockManagerMaster.DRIVER_ENDPOINT_NAME,
       new BlockManagerMasterEndpoint(rpcEnv, isLocal, conf, listenerBus)),
       conf, isDriver)
 
+    /**
+     * 创建BlockManager。
+     */
     // NB: blockManager is not valid until initialize() is called later.
     val blockManager = new BlockManager(executorId, rpcEnv, blockManagerMaster,
       serializerManager, conf, memoryManager, mapOutputTracker, shuffleManager,
       blockTransferService, securityManager, numUsableCores)
 
+    /**
+     * 创建度量系统，并且制定度量系统的实例名为driver。此时虽然创建了，但是并未启动，
+     * 目的是等待SparkContext中的任务调度器Task Scheculer告诉度量系统应用程序ID后再启动。
+     *
+     */
     val metricsSystem = if (isDriver) {
       // Don't start metrics system right now for Driver.
       // We need to wait for the task scheduler to give us an app ID.
       // Then we can start the metrics system.
       MetricsSystem.createMetricsSystem("driver", conf, securityManager)
     } else {
+      /**
+       * 当前实例为Executor：设置spark.executor.id属性为当前Executor的ID，然后创建并启动度量系统
+       */
       // We need to set the executor ID before the MetricsSystem is created because sources and
       // sinks specified in the metrics configuration file will want to incorporate this executor's
       // ID into the metrics they report.

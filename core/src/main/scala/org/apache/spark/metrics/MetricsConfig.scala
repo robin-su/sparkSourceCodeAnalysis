@@ -34,9 +34,20 @@ private[spark] class MetricsConfig(conf: SparkConf) extends Logging {
   private val INSTANCE_REGEX = "^(\\*|[a-zA-Z]+)\\.(.+)".r
   private val DEFAULT_METRICS_CONF_FILENAME = "metrics.properties"
 
+  /**
+   * 度量的属性信息
+   */
   private[metrics] val properties = new Properties()
+  /**
+   * 每个实例的子属性。缓存每个实例与其属性的映射关系
+   */
   private[metrics] var perInstanceSubProperties: mutable.HashMap[String, Properties] = null
 
+  /**
+   * 设置默认属性
+   *
+   * @param prop
+   */
   private def setDefaultProperties(prop: Properties) {
     prop.setProperty("*.sink.servlet.class", "org.apache.spark.metrics.sink.MetricsServlet")
     prop.setProperty("*.sink.servlet.path", "/metrics/json")
@@ -122,6 +133,8 @@ private[spark] class MetricsConfig(conf: SparkConf) extends Logging {
   }
 
   /**
+   * 给MetricsConfig的properties中添加从指定文件中加载的度量属性。
+   *
    * Loads configuration from a config file. If no config file is provided, try to get file
    * in class path.
    */

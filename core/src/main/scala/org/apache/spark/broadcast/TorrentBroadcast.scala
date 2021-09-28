@@ -65,6 +65,10 @@ private[spark] class TorrentBroadcast[T: ClassTag](obj: T, id: Long)
   extends Broadcast[T](id) with Logging with Serializable {
 
   /**
+   * 从Executor或者Driver上读取的广播块的值。_value是通过调用read-BroadcastBlock方法获得的广播对象。
+   * 由于_value是个lazy及val修饰的属性，因此在构造TorrentBroadcast实例的时候不会调用readBroadcastBlock方法，
+   * 而是等到明确需要使用_value的值时。
+   *
    * executor中广播变量的值，通过readBroadcastBlock方法进行重建，通过从Driver或者Executors中读取blocks来构建value.
    * 对于Driver，若需要广播变量，则以延迟读取的方式从块管理器（BlockManager）中读取。
    *
@@ -104,11 +108,21 @@ private[spark] class TorrentBroadcast[T: ClassTag](obj: T, id: Long)
   /** Total number of blocks this broadcast variable contains. */
   private val numBlocks: Int = writeBlocks(obj)
 
+  /**
+   * 是否给广播块生成校验和
+   */
   /** Whether to generate checksum for blocks or not. */
   private var checksumEnabled: Boolean = false
+  /**
+   * 用于存储每个广播块的校验和的数组。
+   */
   /** The checksum for all the blocks. */
   private var checksums: Array[Int] = _
 
+  /**
+   *
+   * @return
+   */
   override protected def getValue() = {
     _value
   }
@@ -139,6 +153,7 @@ private[spark] class TorrentBroadcast[T: ClassTag](obj: T, id: Long)
     // do not create a duplicate copy of the broadcast variable's value.
     // 存储一份广播变量的拷贝，方便driver的任务快速读取广播变量
     val blockManager = SparkEnv.get.blockManager
+    // 调用BlockManager的putSingle方法将广播对象写入本地的存储体系
     if (!blockManager.putSingle(broadcastId, value, MEMORY_AND_DISK, tellMaster = false)) {
       throw new SparkException(s"Failed to store $broadcastId in BlockManager")
     }
