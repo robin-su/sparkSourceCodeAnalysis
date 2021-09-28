@@ -70,13 +70,26 @@ class SparkEnv (
     val outputCommitCoordinator: OutputCommitCoordinator,
     val conf: SparkConf) extends Logging {
 
+  /**
+   * 当前SparkEnv是否停止的状态。
+   */
   @volatile private[spark] var isStopped = false
+
+  /**
+   * 所有python实现的Worker的缓存。
+   */
   private val pythonWorkers = mutable.HashMap[(String, Map[String, String]), PythonWorkerFactory]()
 
   // A general, soft-reference map for metadata needed during HadoopRDD split computation
   // (e.g., HadoopFileRDD uses this to cache JobConfs and InputFormats).
+  /**
+   * HadoopRDD进行任务切分时所需要的元数据的软引用。例如，HadoopFileRDD将使用hadoopJobMetadata缓存JobConf和InputFormat。
+   */
   private[spark] val hadoopJobMetadata = new MapMaker().softValues().makeMap[String, Any]()
 
+  /**
+   * 如果当前SparkEnv处于Driver实例中，那么将创建Driver的临时目录。
+   */
   private[spark] var driverTmpDir: Option[String] = None
 
   private[spark] def stop() {

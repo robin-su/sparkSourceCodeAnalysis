@@ -34,6 +34,8 @@ private case class AskPermissionToCommitOutput(
     attemptNumber: Int)
 
 /**
+ * 用于判定给定Stage的分区任务是否有权限将输出提交到HDFS，并对同一分区任务的多次任务尝试（TaskAttempt）进行协调
+ *
  * 当Spark应用程序使用了Spark SQL（包括Hive）或者需要将任务的输出保存到HDFS时，就会用到输出提交协调器OutputCommitCoordinator,
  * OutputCommitCoordinator将决定任务是否可以提交输出到HDFS。无论是Driver还是Executor，在SparkEnv中都包含了子组件OutputCommitCoordinator。
  * 在Driver上注册了OutputCommitCoordinatorEndpoint，所有Executor上的OutputCommitCoordinator都是通过OutputCommitCoordinatorEndpoint
@@ -66,6 +68,8 @@ private[spark] class OutputCommitCoordinator(conf: SparkConf, isDriver: Boolean)
   }
 
   /**
+   * 用于判断authorizedCommittersByStage是否为
+   *
    * Map from active stages's id => authorized task attempts for each partition id, which hold an
    * exclusive lock on committing task output for that partition, as well as any known failed
    * attempts in the stage.
@@ -85,6 +89,9 @@ private[spark] class OutputCommitCoordinator(conf: SparkConf, isDriver: Boolean)
   }
 
   /**
+   * 用于向OutputCommitCoordinatorEndpoint发送AskPermissionToCommitOutput，
+   * 并根据OutputCommitCoordinatorEndpoint的响应确认是否有权限将Stage的指定分区的输出提交到HDFS上
+   *
    * Called by tasks to ask whether they can commit their output to HDFS.
    *
    * If a task attempt has been authorized to commit, then all other attempts to commit the same
@@ -115,6 +122,10 @@ private[spark] class OutputCommitCoordinator(conf: SparkConf, isDriver: Boolean)
   }
 
   /**
+   * stageStart方法用于启动给定Stage的输出提交到HDFS的协调机制，
+   * 其实质为创建给定Stage的对应TaskAttemptNumber数组，并将TaskAttemptNumber
+   * 数组中的所有TaskAttemptNumber置为NO_AUTHORIZED_COMMITTER
+   *
    * Called by the DAGScheduler when a stage starts. Initializes the stage's state if it hasn't
    * yet been initialized.
    *
@@ -133,6 +144,11 @@ private[spark] class OutputCommitCoordinator(conf: SparkConf, isDriver: Boolean)
     }
   }
 
+  /**
+   * stageEnd方法（见代码清单5-94）用于停止给定Stage的输出提交到HDFS的协调机制，
+   * 其实质为将给定Stage及对应的TaskAttemptNumber数组从authorizedCommitters-ByStage中删除。
+   * @param stage
+   */
   // Called by DAGScheduler
   private[scheduler] def stageEnd(stage: Int): Unit = synchronized {
     stageStates.remove(stage)
@@ -175,6 +191,15 @@ private[spark] class OutputCommitCoordinator(conf: SparkConf, isDriver: Boolean)
     }
   }
 
+  /**
+   * 用于判断给定的任务尝试是否有权限将给定Stage的指定分区的数据提交到HDFS。
+   *
+   * @param stage
+   * @param stageAttempt
+   * @param partition
+   * @param attemptNumber
+   * @return
+   */
   // Marked private[scheduler] instead of private so this can be mocked in tests
   private[scheduler] def handleAskPermissionToCommit(
       stage: Int,
@@ -225,12 +250,14 @@ private[spark] object OutputCommitCoordinator {
     logDebug("init") // force eager creation of logger
 
     override def receive: PartialFunction[Any, Unit] = {
+//      StopCoordinator:此消息将停止OutputCommitCoordinatorEndpoint。
       case StopCoordinator =>
         logInfo("OutputCommitCoordinator stopped!")
         stop()
     }
 
     override def receiveAndReply(context: RpcCallContext): PartialFunction[Any, Unit] = {
+//      AskPermissionToCommitOutput：此消息将通过OutputCommitCoordinator的handleAskPermissionToCommit方法处理，进而确认客户端是否有权限将输出提交到HDFS。
       case AskPermissionToCommitOutput(stage, stageAttempt, partition, attemptNumber) =>
         context.reply(
           outputCommitCoordinator.handleAskPermissionToCommit(stage, stageAttempt, partition,

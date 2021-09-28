@@ -56,6 +56,12 @@ import org.apache.spark.unsafe.Platform
 import org.apache.spark.util._
 import org.apache.spark.util.io.ChunkedByteBuffer
 
+/**
+ * BlockResult用于封装从本地的BlockManager中获取的Block数据及与Block相关联的度量数据。
+ * @param data
+ * @param readMethod
+ * @param bytes
+ */
 /* Class for returning a fetched block and associated metrics. */
 private[spark] class BlockResult(
     val data: Iterator[Any],

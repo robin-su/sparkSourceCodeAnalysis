@@ -140,6 +140,9 @@ private[storage] class BlockInfoManager extends Logging {
 
   /**
    * 跟踪每个任务为写入而锁定的块集。
+   * 每次任务执行尝试的标识TaskAttemptId与执行获取的Block的写锁之间的映射关系。
+   * TaskAttemptId与写锁之间是一对多的关系，即一次任务尝试执行会获取零到多个Block的写锁
+   *
    * Tracks the set of blocks that each task has locked for writing.
    */
   @GuardedBy("this")
@@ -148,6 +151,9 @@ private[storage] class BlockInfoManager extends Logging {
       with mutable.MultiMap[TaskAttemptId, BlockId]
 
   /**
+   * 每次任务尝试执行的标识TaskAttemptId与执行获取的Block的读锁之间的映射关系。
+   * TaskAttemptId与读锁之间是一对多的关系，即一次任务尝试执行会获取零到多个Block的读锁，并且会记录对于同一个Block的读锁的占用次数。
+   *
    * 跟踪每个任务为读取而锁定的块集，以及块被锁定的次数（因为我们的读取锁是可重入的）。
    * Tracks the set of blocks that each task has locked for reading, along with the number of times
    * that a block has been locked (since our read locks are re-entrant).
@@ -228,7 +234,7 @@ private[storage] class BlockInfoManager extends Logging {
           }
       }
       if (blocking) {
-        wait()
+        wait() // 等待占用写锁的任务尝试线程释放Block的写锁后唤醒当前线程
       }
     } while (blocking)
     None
@@ -267,6 +273,11 @@ private[storage] class BlockInfoManager extends Logging {
             return Some(info)
           }
       }
+
+      /**
+       * 如果允许阻塞（即blocking为true），那么当前线程将等待，直到占用写锁的线程释放Block的写锁后唤醒当前线程。
+       * 如果占有写锁的线程一直不释放写锁，那么当前线程将出现“饥饿”状况，即可能无限期等待下去。
+       */
       if (blocking) {
         wait()
       }

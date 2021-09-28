@@ -29,6 +29,7 @@ import org.apache.spark.util.{RpcUtils, ThreadUtils}
 
 /**
  * BlockManagerMaster 主要负责和driver的交互，来获取跟底层存储相关的信息。
+ * 代理BlockManager与Driver上的BlockManagerMasterEndpoint通信
  *
  * @param driverEndpoint
  * @param conf
