@@ -20,6 +20,8 @@ package org.apache.spark.memory
 import javax.annotation.concurrent.GuardedBy
 
 /**
+ * lock: 对内存池提供线程安全保证的锁对象。
+ *
  * Manages bookkeeping for an adjustable-sized region of memory. This class is internal to
  * the [[MemoryManager]]. See subclasses for more details.
  *
@@ -29,10 +31,15 @@ import javax.annotation.concurrent.GuardedBy
  */
 private[memory] abstract class MemoryPool(lock: Object) {
 
+  /**
+   * 对内存池提供线程安全保证的锁对象。
+   */
   @GuardedBy("lock")
   private[this] var _poolSize: Long = 0
 
   /**
+   * 返回内存池的大小（即_poolSize，单位为字节）的方法。
+   *
    * Returns the current size of the pool, in bytes.
    */
   final def poolSize: Long = lock.synchronized {
@@ -40,6 +47,8 @@ private[memory] abstract class MemoryPool(lock: Object) {
   }
 
   /**
+   * 获取内存池的空闲空间
+   *
    * 返回内存池中空闲的内存信息
    * Returns the amount of free memory in the pool, in bytes.
    */
@@ -48,6 +57,8 @@ private[memory] abstract class MemoryPool(lock: Object) {
   }
 
   /**
+   * 给内存池扩展delta给定的大小
+   *
    * Expands the pool by `delta` bytes.
    */
   final def incrementPoolSize(delta: Long): Unit = lock.synchronized {
@@ -56,6 +67,8 @@ private[memory] abstract class MemoryPool(lock: Object) {
   }
 
   /**
+   * 将内存池缩小delta给定的大小（单位为字节）
+   *
    * Shrinks the pool by `delta` bytes.
    */
   final def decrementPoolSize(delta: Long): Unit = lock.synchronized {
@@ -66,6 +79,8 @@ private[memory] abstract class MemoryPool(lock: Object) {
   }
 
   /**
+   * 获取已经使用的内存大小（单位为字节）。此方法需要MemoryPool的子类实现。
+   *
    * Returns the amount of used memory in this pool (in bytes).
    */
   def memoryUsed: Long

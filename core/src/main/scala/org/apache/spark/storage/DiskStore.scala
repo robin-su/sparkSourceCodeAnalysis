@@ -54,6 +54,8 @@ private[spark] class DiskStore(
   /**
    * Invokes the provided callback function to write the specific block.
    *
+   * 调用回调函数writeFunc，对Block文件写入。当写入失败时，还需要调用remove方法删除BlockId所对应的Block文件。
+   *
    * @throws IllegalStateException if the block already exists in the disk store.
    */
   def put(blockId: BlockId)(writeFunc: WritableByteChannel => Unit): Unit = {

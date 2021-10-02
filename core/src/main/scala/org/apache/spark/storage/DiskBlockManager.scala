@@ -29,6 +29,8 @@ import org.apache.spark.util.{ShutdownHookManager, Utils}
  * 可以看出，这个类主要用于创建并维护逻辑block和block落地文件的映射关系。保存映射关系，有两个解决方案：
  *  一者是使用Map存储每一条具体的映射键值对，
  *  二者是指定映射函数像分区函数等等，给定的key通过映射函数映射到具体的value。
+ *  deleteFilesOnStop：停止DiskBlockManager的时候是否删除本地目录的布尔类型标记。
+ *  当不指定外部的ShuffleClient（即spark.shuffle.service.enabled属性为false）或者当前实例是Driver时，此属性为true
  *
  * Creates and maintains the logical mapping between logical blocks and physical on-disk
  * locations. One block is mapped to one file with a name given by its BlockId.
@@ -108,6 +110,8 @@ private[spark] class DiskBlockManager(conf: SparkConf, deleteFilesOnStop: Boolea
   /**
    * 此方法用于获取本地localDirs目录中的所有文件
    *
+   * getAllFiles为了保证线程安全，采用了同步+克隆的方式。
+   *
    * dirId 是指的第几个父目录（从0开始数），subDirId是指的父目录下的第几个子目录（从0开始数）。最后拼接父子目录为一个新的父目录subDir。
    然后以subDir为父目录，创建File对象，并返回之。
    * List all the files currently stored on disk by the disk manager.
@@ -144,6 +148,8 @@ private[spark] class DiskBlockManager(conf: SparkConf, deleteFilesOnStop: Boolea
   }
 
   /**
+   * 此方法用于为'中间结果'创建唯一的BlockId和文件，此文件将用于保存本地Block的数据。
+   *
    * 此方法用于获取本地localDirs目录中的所有文件
    * Produces a unique block id and File suitable for storing local intermediate results.
    */
@@ -170,6 +176,10 @@ private[spark] class DiskBlockManager(conf: SparkConf, deleteFilesOnStop: Boolea
 
   /**
    * 创建用于存储块数据的本地目录。这些目录位于配置的本地目录中，在使用外部 shuffle 服务时不会在 JVM 退出时被删除。
+   *
+   * getConfiguredLocalDirs方法默认获取spark.local.dir属性或者系统属性java.io.tmpdir指定的目录，目录可能有多个），
+   * 并在每个路径下创建以blockmgr-为前缀，UUID为后缀的随机字符串的子目录，例如，blockmgr-4949e19c-490c-48fc-ad6a-d80f4dbe73df。
+   *
    * Create local directories for storing block data. These directories are
    * located inside configured local directories and won't
    * be deleted on JVM exit when using the external shuffle service.

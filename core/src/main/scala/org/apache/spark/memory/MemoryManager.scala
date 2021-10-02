@@ -94,6 +94,8 @@ private[spark] abstract class MemoryManager(
   def maxOffHeapStorageMemory: Long
 
   /**
+   * 给onHeapStorageMemoryPool和offHeapStorageMemoryPool设置MemoryStore
+   *
    * 设置此管理器使用的 MemoryStore 以驱逐缓存块。由于初始化顺序限制，这必须在构造后设置
    * Set the [[MemoryStore]] used by this manager to evict cached blocks.
    * This must be set after construction due to initialization ordering constraints.
@@ -104,6 +106,8 @@ private[spark] abstract class MemoryManager(
   }
 
   /**
+   * 为存储BlockId对应的Block，从堆内存或堆外内存获取所需大小
+   *
    * 获取 N 字节的内存来缓存给定的块，必要时驱逐现有的块。
    * Acquire N bytes of memory to cache the given block, evicting existing ones if necessary.
    *
@@ -112,6 +116,8 @@ private[spark] abstract class MemoryManager(
   def acquireStorageMemory(blockId: BlockId, numBytes: Long, memoryMode: MemoryMode): Boolean
 
   /**
+   * 为展开BlockId对应的Block，从堆内存或堆外内存获取所需大小（即numBytes）的内存
+   *
    * 获取 N 字节的内存来展开给定的块，必要时驱逐现有的块。
      这个额外的方法允许子类区分获取存储内存和获取展开内存之间的行为。例如，Spark 1.5 及之前版本中的内存管理模型限制了可以从展开中释放的空间量。
      返回：
@@ -146,6 +152,8 @@ private[spark] abstract class MemoryManager(
       memoryMode: MemoryMode): Long
 
   /**
+   * 从堆内存或堆外内存释放指定大小（即numBytes）的内存
+   *
    * 释放属于给定任务的 numBytes 执行内存。
    * Release numBytes of execution memory belonging to the given task.
    */
@@ -214,6 +222,8 @@ private[spark] abstract class MemoryManager(
   }
 
   /**
+   * onHeapStorageMemoryPool与offHeapStorageMemoryPool中一共占用的存储内存
+   *
    * 当前使用的存储内存，以字节为单位。
    * Storage memory currently in use, in bytes.
    */

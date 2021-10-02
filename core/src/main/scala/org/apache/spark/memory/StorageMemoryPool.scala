@@ -51,7 +51,7 @@ private[memory] class StorageMemoryPool(
   override def memoryUsed: Long = lock.synchronized {
     _memoryUsed
   }
-
+//  当前StorageMemoryPool所关联的MemoryStore
   private var _memoryStore: MemoryStore = _
   def memoryStore: MemoryStore = {
     // 若_memoryStore为空，则抛出非法状态异常
@@ -83,7 +83,9 @@ private[memory] class StorageMemoryPool(
   }
 
   /**
-   * 获取N比特字节的内存用于缓存，在必要的时候驱逐缓存中已经存在的字节
+   * 用于给BlockId对应的Block获取numBytes指定大小的内存。
+   *
+   *
    * Acquire N bytes of storage memory for the given block, evicting existing ones if necessary.
    *
    * @param blockId the ID of the block we are acquiring storage memory for 需要获取内存的blockId
@@ -100,16 +102,18 @@ private[memory] class StorageMemoryPool(
     assert(memoryUsed <= poolSize)
     // 若numBytesToFree > 0 则将内存驱逐到空闲的空间
     if (numBytesToFree > 0) {
+      // 驱逐内存
       memoryStore.evictBlocksToFreeSpace(Some(blockId), numBytesToFree, memoryMode)
     }
     // NOTE: If the memory store evicts blocks, then those evictions will synchronously call
     // back into this StorageMemoryPool in order to free memory. Therefore, these variables
     // should have been updated.
+    // 判断内存是否充足
     val enoughMemory = numBytesToAcquire <= memoryFree
     if (enoughMemory) {
-      _memoryUsed += numBytesToAcquire
+      _memoryUsed += numBytesToAcquire // 增加已经使用了的内存
     }
-    enoughMemory
+    enoughMemory // 返回是否成功获得了用户存储block的内存空间
   }
 
   /**
@@ -140,9 +144,12 @@ private[memory] class StorageMemoryPool(
    * Free space to shrink the size of this storage memory pool by `spaceToFree` bytes.
    * Note: this method doesn't actually reduce the pool size but relies on the caller to do so.
    *
+   * 用于释放指定大小的空间，缩小内存池的大小。
+   *
    * @return number of bytes to be removed from the pool's capacity.
    */
   def freeSpaceToShrinkPool(spaceToFree: Long): Long = lock.synchronized {
+    // 选出要释放的内存和空闲的内存较小的那个
     val spaceFreedByReleasingUnusedMemory = math.min(spaceToFree, memoryFree)
     val remainingSpaceToFree = spaceToFree - spaceFreedByReleasingUnusedMemory
     if (remainingSpaceToFree > 0) {

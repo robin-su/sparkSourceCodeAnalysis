@@ -46,7 +46,7 @@ import org.apache.spark.storage.BlockId
  */
 private[spark] class UnifiedMemoryManager private[memory] (
     conf: SparkConf,
-    val maxHeapMemory: Long,
+    val maxHeapMemory: Long, //最大堆内存。大小为系统可用内存与spark.memory.fraction属性值（默认为0.6）的乘积。
     onHeapStorageRegionSize: Long,
     numCores: Int)
   extends MemoryManager(
@@ -148,6 +148,11 @@ private[spark] class UnifiedMemoryManager private[memory] (
 
   /**
    * 获取Storage Memeory
+   *
+   * ① 根据内存模式，获取此内存模式的计算内存池、存储内存池和可以存储的最大空间。
+   * ② 对要获得的存储大小进行校验，即numBytes不能大于可以存储的最大空间。
+   * ③ 如果要获得的存储大小比存储内存池的空闲空间要大，那么就到计算内存池中去借用空间。借用的空间取numBytes和计算内存池的空闲空间的最小值。
+   * ④ 从存储内存池获得存储BlockId对应的Block所需的空间。
    *
    * @param blockId
    * @param numBytes
