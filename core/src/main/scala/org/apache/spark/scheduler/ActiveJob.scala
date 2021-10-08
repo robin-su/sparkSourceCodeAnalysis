@@ -22,6 +22,8 @@ import java.util.Properties
 import org.apache.spark.util.CallSite
 
 /**
+ * ActiveJob用来表示已经激活的Job，即被DAGScheduler接收处理的Job。
+ *
  * A running job in the DAGScheduler. Jobs can be of two types: a result job, which computes a
  * ResultStage to execute an action, or a map-stage job, which computes the map outputs for a
  * ShuffleMapStage before any downstream stages are submitted. The latter is used for adaptive
@@ -42,12 +44,16 @@ import org.apache.spark.util.CallSite
  */
 private[spark] class ActiveJob(
     val jobId: Int,
-    val finalStage: Stage,
-    val callSite: CallSite,
-    val listener: JobListener,
-    val properties: Properties) {
+    val finalStage: Stage, // Job的最下游Stage。
+    val callSite: CallSite, // 应用程序调用栈。
+    val listener: JobListener, // 监听当前Job的JobListener。
+    val properties: Properties) { // 包含了当前Job的调度、Job group、描述等属性的Properties。
 
   /**
+   * 当前Job的分区数量。如果finalStage为ResultStage，
+   * 那么此属性等于ResultStage的partitions属性的长度。
+   * 如果finalStage为ShuffleMapStage，那么此属性等于ShuffleMapStage的rdd的partitions属性的长度。
+   *
    * Number of partitions we need to compute for this job. Note that result stages may not need
    * to compute all partitions in their target RDD, for actions like first() and lookup().
    */
@@ -56,9 +62,16 @@ private[spark] class ActiveJob(
     case m: ShuffleMapStage => m.rdd.partitions.length
   }
 
-  /** Which partitions of the stage have finished */
+  /**
+   * Boolean类型的数组，每个数组索引代表一个分区的任务是否执行完成。
+   *
+   * Which partitions of the stage have finished
+   */
   val finished = Array.fill[Boolean](numPartitions)(false)
 
+  /**
+   * 当前Job的所有任务中已完成任务的数量。
+   */
   var numFinished = 0
 
   /** Resets the status of all partitions in this stage so they are marked as not finished. */

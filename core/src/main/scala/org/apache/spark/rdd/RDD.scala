@@ -47,6 +47,8 @@ import org.apache.spark.util.random.{BernoulliCellSampler, BernoulliSampler, Poi
   SamplingUtils}
 
 /**
+ * 注意这里使用的是模板方法
+ *
  * A Resilient Distributed Dataset (RDD), the basic abstraction in Spark. Represents an immutable,
  * partitioned collection of elements that can be operated on in parallel. This class contains the
  * basic operations available on all RDDs, such as `map`, `filter`, and `persist`. In addition,
@@ -245,6 +247,11 @@ abstract class RDD[T: ClassTag](
   private def checkpointRDD: Option[CheckpointRDD[T]] = checkpointData.flatMap(_.checkpointRDD)
 
   /**
+   * 用于获取当前RDD的所有依赖的序列。
+   * 1） 先从CheckPoint中获取RDD，并将这些RDD封装为OneToOneDependency列表。
+   * 2） 若从CheckPoint无法获取RDD的依赖列表，则调用子类实现的getDependencies方法获取当前RDD
+   * 的依赖后赋值dependencies,最后返回dependencies_
+   *
    * Get the list of dependencies of this RDD, taking into account whether the
    * RDD is checkpointed or not.
    */
@@ -262,6 +269,8 @@ abstract class RDD[T: ClassTag](
   }
 
   /**
+   * 获取partitions分区数组的优先级： 从CheckPoint查找 -> 读取 parttitons_属性 -> 调用getPartition方法获取
+   *
    * Get the array of partitions of this RDD, taking into account whether the
    * RDD is checkpointed or not.
    */
@@ -289,6 +298,9 @@ abstract class RDD[T: ClassTag](
   final def getNumPartitions: Int = partitions.length
 
   /**
+   * 先调用 CheckPoint中保存的RDD的getPreferredLocations方法获取指定分区的'偏好位置'，
+   * 如果CheckPoint中没有保存，就调用自身的getPreferredLocations方法获取指定分区的偏好位置。
+   *
    * Get the preferred locations of a partition, taking into account whether the
    * RDD is checkpointed.
    */
@@ -312,6 +324,8 @@ abstract class RDD[T: ClassTag](
   }
 
   /**
+   * 获取当前RDD祖先依赖中属于窄依赖的RDD序列
+   *
    * Return the ancestors of the given RDD that are related to it only through a sequence of
    * narrow dependencies. This traverses the given RDD's dependency tree using DFS, but maintains
    * no ordering on the RDDs returned.

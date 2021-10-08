@@ -22,6 +22,8 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.util.CallSite
 
 /**
+ * ResultStage是最后执行的Stage，此阶段主要进行作业的收尾工作（例如，对各个分区的数据收拢、打印到控制台或写入到HDFS）
+ *
  * ResultStages apply a function on some partitions of an RDD to compute the result of an action.
  * The ResultStage object captures the function to execute, `func`, which will be applied to each
  * partition, and the set of partition IDs, `partitions`. Some stages may not run on all partitions
@@ -30,8 +32,8 @@ import org.apache.spark.util.CallSite
 private[spark] class ResultStage(
     id: Int,
     rdd: RDD[_],
-    val func: (TaskContext, Iterator[_]) => _,
-    val partitions: Array[Int],
+    val func: (TaskContext, Iterator[_]) => _, // 即对RDD的分区进行计算的函数。func是ResultStage的构造器参数
+    val partitions: Array[Int], // 由RDD的各个分区的索引组成的数组
     parents: List[Stage],
     firstJobId: Int,
     callSite: CallSite)
@@ -54,6 +56,9 @@ private[spark] class ResultStage(
   }
 
   /**
+   * findMissingPartitions用于找出当前Job的所有分区中还没有完成的分区的索引。
+   * ResultStage判断一个分区是否完成，是通过ActiveJob的Boolean类型数组finished，因为finished记录了每个分区是否完成。
+   *
    * Returns the sequence of partition ids that are missing (i.e. needs to be computed).
    *
    * This can only be called when there is an active job.

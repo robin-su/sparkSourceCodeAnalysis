@@ -22,6 +22,8 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.scheduler.JobListener
 
 /**
+ * Approximate Action Listener只对有单一返回结果的Action（如count()和非并行的reduce()）进行监听
+ *
  * A JobListener for an approximate single-result action, such as count() or non-parallel reduce().
  * This listener waits up to timeout milliseconds and will return a partial answer even if the
  * complete answer is not available by then.

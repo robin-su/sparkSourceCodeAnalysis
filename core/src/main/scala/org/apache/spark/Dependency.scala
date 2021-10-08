@@ -30,11 +30,14 @@ import org.apache.spark.shuffle.ShuffleHandle
  */
 @DeveloperApi
 abstract class Dependency[T] extends Serializable {
+  // 获取当前依赖的RDD
   def rdd: RDD[T]
 }
 
 
 /**
+ * 如果RDD与上游RDD的'分区'是'一对一'的关系，那么RDD和其上游RDD之间的依赖关系属于窄依赖（NarrowDependency）
+ *
  * :: DeveloperApi ::
  * Base class for dependencies where each partition of the child RDD depends on a small number
  * of partitions of the parent RDD. Narrow dependencies allow for pipelined execution.
@@ -42,8 +45,7 @@ abstract class Dependency[T] extends Serializable {
 @DeveloperApi
 abstract class NarrowDependency[T](_rdd: RDD[T]) extends Dependency[T] {
   /**
-   * 根据子RDD的分区，获得父RDD的分区
-   * 从返回值可以看出，一个子RDD的分区可能依赖于多个父RDD的分区。
+   * 获取某一分区的所有父级别分区序列
    *
    * Get the parent partitions for a child partition.
    * @param partitionId a partition of the child RDD
@@ -56,6 +58,8 @@ abstract class NarrowDependency[T](_rdd: RDD[T]) extends Dependency[T] {
 
 
 /**
+ * RDD与上游RDD的分区如果不是一对一的关系，或者RDD的分区依赖于上游RDD的多个分区，那么这种依赖关系就叫做Shuffle依赖（ShuffleDependency）
+ *
  * :: DeveloperApi ::
  * Represents a dependency on the output of a shuffle stage. Note that in the case of shuffle,
  * the RDD is transient since we don't need it on the executor side.
@@ -82,20 +86,29 @@ class ShuffleDependency[K: ClassTag, V: ClassTag, C: ClassTag](
   if (mapSideCombine) {
     require(aggregator.isDefined, "Map-side combine without Aggregator specified!")
   }
+  // 泛型要求必须是Product2[K, V]及其子类的RDD。
   override def rdd: RDD[Product2[K, V]] = _rdd.asInstanceOf[RDD[Product2[K, V]]]
 
+  // K的类名
   private[spark] val keyClassName: String = reflect.classTag[K].runtimeClass.getName
+
+  // V的类名。
   private[spark] val valueClassName: String = reflect.classTag[V].runtimeClass.getName
+
   // Note: It's possible that the combiner class tag is null, if the combineByKey
   // methods in PairRDDFunctions are used instead of combineByKeyWithClassTag.
+  // 结合器C的类名
   private[spark] val combinerClassName: Option[String] =
     Option(reflect.classTag[C]).map(_.runtimeClass.getName)
 
+  // 当前ShuffleDependency的身份标识。
   val shuffleId: Int = _rdd.context.newShuffleId()
 
+//  当前ShuffleDependency的处理器。
   val shuffleHandle: ShuffleHandle = _rdd.context.env.shuffleManager.registerShuffle(
     shuffleId, _rdd.partitions.length, this)
 
+//  ShuffleDependency在构造的过程中还将自己注册到SparkContext的ContextCleaner中。
   _rdd.sparkContext.cleaner.foreach(_.registerShuffleForCleanup(this))
 }
 
@@ -114,18 +127,27 @@ class OneToOneDependency[T](rdd: RDD[T]) extends NarrowDependency[T](rdd) {
  * :: DeveloperApi ::
  * Represents a one-to-one dependency between ranges of partitions in the parent and child RDDs.
  * @param rdd the parent RDD 父RDD
- * @param inStart the start of the range in the parent RDD 父RDD range的起始位置
- * @param outStart the start of the range in the child RDD 子RDD range的起始位置
+ * @param inStart the start of the range in the parent RDD 代表父RDD的分区范围起始值
+ * @param outStart the start of the range in the child RDD 代表子RDD的分区范围起始值
  * @param length the length of the range range的长度
  */
 @DeveloperApi
 class RangeDependency[T](rdd: RDD[T], inStart: Int, outStart: Int, length: Int)
   extends NarrowDependency[T](rdd) {
 
+  /**
+   * 索引为partitionId的子RDD分区与索引为partitionId-outStart + inStart的父RDD分区相对应
+   *
+   * @param partitionId a partition of the child RDD
+   *  @return the partitions of the parent RDD that the child partition depends upon
+   */
   override def getParents(partitionId: Int): List[Int] = {
-    // 子rdd分区id 大于等于 子RDD的range其实位置，且小于子rdd分区range起始位置加上range长度
+
+    /**
+     * partitionId - outStart 表示在子RDD中，partitionId距离起始位置outStart 的长度。
+     * 这个距离加上父亲RDD的partition访问的其实位置就是该partition对应父亲rdd的partition的位置
+     */
     if (partitionId >= outStart && partitionId < outStart + length) {
-      // （子分区id - 子rdd分区range起始位置）+ 父rdd分区起始位置 = 子分区在子分区range中的起始位置 + 父rdd分区range的起始位置
       List(partitionId - outStart + inStart)
     } else {
       Nil

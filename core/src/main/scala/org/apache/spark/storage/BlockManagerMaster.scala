@@ -68,6 +68,11 @@ class BlockManagerMaster(
    * 向driver注册 BlockManager 的 id。输入的 BlockManagerId 不包含拓扑信息。
    * 此信息是从master获取的，我们以更新的 BlockManagerId 响应，并用此信息充实。
    *
+   *
+   * 注册BlockManager的实质是向BlockManagerMasterEndpoint发送RegisterBlockManager消息，
+   * RegisterBlockManager将携带要注册的BlockManager的blockManagerId、最大内存大小及slaveEndpoint
+   * （即BlockManagerSlaveEndpoint）。
+   *
    * Register the BlockManager's id with the driver. The input BlockManagerId does not contain
    * topology information. This information is obtained from the master and we respond with an
    * updated BlockManagerId fleshed out with this information.

@@ -34,6 +34,8 @@ import org.apache.spark.storage.BlockManagerMessages._
 import org.apache.spark.util.{ThreadUtils, Utils}
 
 /**
+ * BlockManagerMasterEndpoint接 收Driver或Executor上BlockManagerMaster发送的消息，对所有的BlockManager统一管理
+ *
  * BlockManagerMasterEndpoint is an [[ThreadSafeRpcEndpoint]] on the master node to track statuses
  * of all slaves' block managers.
  */
@@ -45,12 +47,21 @@ class BlockManagerMasterEndpoint(
     listenerBus: LiveListenerBus)
   extends ThreadSafeRpcEndpoint with Logging {
 
+  /**
+   * BlockManagerId与BlockManagerInfo之间映射关系的缓存。
+   */
   // Mapping from block manager id to the block manager's information.
   private val blockManagerInfo = new mutable.HashMap[BlockManagerId, BlockManagerInfo]
 
+  /**
+   * Executor ID与BlockManagerId之间映射关系的缓存。
+   */
   // Mapping from executor ID to block manager ID.
   private val blockManagerIdByExecutor = new mutable.HashMap[String, BlockManagerId]
 
+  /**
+   * BlockId与存储了此BlockId对应Block的BlockManager的BlockManagerId之间的一对多关系缓存。
+   */
   // Mapping from block id to the set of block managers that have the block.
   private val blockLocations = new JHashMap[BlockId, mutable.HashSet[BlockManagerId]]
 
@@ -58,6 +69,9 @@ class BlockManagerMasterEndpoint(
     ThreadUtils.newDaemonCachedThreadPool("block-manager-ask-thread-pool", 100)
   private implicit val askExecutionContext = ExecutionContext.fromExecutorService(askThreadPool)
 
+  /**
+   * 对集群所有节点的拓扑结构的映射
+   */
   private val topologyMapper = {
     val topologyMapperClassName = conf.get(
       "spark.storage.replication.topologyMapper", classOf[DefaultTopologyMapper].getName)
@@ -360,7 +374,7 @@ class BlockManagerMasterEndpoint(
       slaveEndpoint: RpcEndpointRef): BlockManagerId = {
     // the dummy id is not expected to contain the topology information.
     // we get that info here and respond back with a more fleshed out block manager id
-    val id = BlockManagerId(
+    val id = BlockManagerId( // 生成BlockManagerId
       idWithoutTopologyInfo.executorId,
       idWithoutTopologyInfo.host,
       idWithoutTopologyInfo.port,
@@ -373,7 +387,7 @@ class BlockManagerMasterEndpoint(
           // A block manager of the same executor already exists, so remove it (assumed dead)
           logError("Got two different block manager registrations on same executor - "
               + s" will replace old one $oldId with new one $id")
-          removeExecutor(id.executorId)
+          removeExecutor(id.executorId) // 移除blockManagerIdByExecutor中的缓存信息
         case None =>
       }
       logInfo("Registering block manager %s with %s RAM, %s".format(

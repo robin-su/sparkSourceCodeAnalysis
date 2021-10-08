@@ -117,6 +117,9 @@ class HashPartitioner(partitions: Int) extends Partitioner {
 
   def numPartitions: Int = partitions
 
+  /**
+   * 由于上游RDD所处理的key的哈希值在取模后很可能产生数据倾斜，所以HashPartitioner并不是一个均衡的分区计算器。
+   */
   def getPartition(key: Any): Int = key match {
     case null => 0
     case _ => Utils.nonNegativeMod(key.hashCode, numPartitions)

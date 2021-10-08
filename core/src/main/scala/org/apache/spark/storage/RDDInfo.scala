@@ -26,20 +26,20 @@ import org.apache.spark.util.Utils
 @DeveloperApi
 class RDDInfo(
     val id: Int,
-    var name: String,
-    val numPartitions: Int,
-    var storageLevel: StorageLevel,
-    val parentIds: Seq[Int],
-    val callSite: String = "",
-    val scope: Option[RDDOperationScope] = None)
+    var name: String, // RDD 的名称
+    val numPartitions: Int, // RDD 的分区数量
+    var storageLevel: StorageLevel, // RDD的存储级别
+    val parentIds: Seq[Int], // RDD的父RDD的id序列。
+    val callSite: String = "", // RDD的用户调用栈信息
+    val scope: Option[RDDOperationScope] = None) // RDD的操作范围
   extends Ordered[RDDInfo] {
 
-  var numCachedPartitions = 0
-  var memSize = 0L
-  var diskSize = 0L
-  var externalBlockStoreSize = 0L
+  var numCachedPartitions = 0 // 缓存的分区数量
+  var memSize = 0L // 使用的内存大小
+  var diskSize = 0L // 使用的磁盘大小
+  var externalBlockStoreSize = 0L // Block存储在外部的大小
 
-  def isCached: Boolean = (memSize + diskSize > 0) && numCachedPartitions > 0
+  def isCached: Boolean = (memSize + diskSize > 0) && numCachedPartitions > 0 // 是否已经缓存
 
   override def toString: String = {
     import Utils.bytesToString
@@ -55,9 +55,12 @@ class RDDInfo(
 }
 
 private[spark] object RDDInfo {
+//  从RDD构建出对应的RDDInfo
   def fromRdd(rdd: RDD[_]): RDDInfo = {
     val rddName = Option(rdd.name).getOrElse(Utils.getFormattedClassName(rdd))
+//    父RDD序列
     val parentIds = rdd.dependencies.map(_.rdd.id)
+
     val callsiteLongForm = Option(SparkEnv.get)
       .map(_.conf.get(EVENT_LOG_CALLSITE_LONG_FORM))
       .getOrElse(false)

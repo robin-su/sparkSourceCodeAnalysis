@@ -41,10 +41,11 @@ private[spark] class ShuffleMapStage(
     parents: List[Stage],
     firstJobId: Int,
     callSite: CallSite,
-    val shuffleDep: ShuffleDependency[_, _, _],
+    val shuffleDep: ShuffleDependency[_, _, _], // 与ShuffleMapStage相对应的ShuffleDependency
     mapOutputTrackerMaster: MapOutputTrackerMaster)
   extends Stage(id, rdd, numTasks, parents, firstJobId, callSite) {
 
+  // 与ShuffleMapStage相关联的ActiveJob的列表。
   private[this] var _mapStageJobs: List[ActiveJob] = Nil
 
   /**
@@ -61,33 +62,52 @@ private[spark] class ShuffleMapStage(
   override def toString: String = "ShuffleMapStage " + id
 
   /**
+   * 与ShuffleMapStage相关联的ActiveJob的列表。
+   *
    * Returns the list of active jobs,
    * i.e. map-stage jobs that were submitted to execute this stage independently (if any).
    */
   def mapStageJobs: Seq[ActiveJob] = _mapStageJobs
 
-  /** Adds the job to the active job list. */
+  /**
+   * 向ShuffleMapStage相关联的ActiveJob的列表中添加ActiveJob
+   *
+   * Adds the job to the active job list.
+   */
   def addActiveJob(job: ActiveJob): Unit = {
     _mapStageJobs = job :: _mapStageJobs
   }
 
-  /** Removes the job from the active job list. */
+  /**
+   * 向ShuffleMapStage相关联的ActiveJob的列表中删除ActiveJob
+   *
+   * Removes the job from the active job list.
+   */
   def removeActiveJob(job: ActiveJob): Unit = {
     _mapStageJobs = _mapStageJobs.filter(_ != job)
   }
 
   /**
+   * ShuffleMapStage可用的map任务的输出数量，这也代表了执行成功的map任务数。
+   *
    * Number of partitions that have shuffle outputs.
    * When this reaches [[numPartitions]], this map stage is ready.
    */
   def numAvailableOutputs: Int = mapOutputTrackerMaster.getNumAvailableOutputs(shuffleDep.shuffleId)
 
   /**
+   * 当_numAvailableOutputs与numPartitions相等时为true。也就是说，ShuffleMapStage的所有分区的map任务都执行成功后，
+   * ShuffleMapStage才是可用的。
+   *
    * Returns true if the map stage is ready, i.e. all partitions have shuffle outputs.
    */
   def isAvailable: Boolean = numAvailableOutputs == numPartitions
 
-  /** Returns the sequence of partition ids that are missing (i.e. needs to be computed). */
+  /**
+   * 找到所有还未执行成功而需要计算的分区。
+   *
+   * Returns the sequence of partition ids that are missing (i.e. needs to be computed).
+   */
   override def findMissingPartitions(): Seq[Int] = {
     mapOutputTrackerMaster
       .findMissingPartitions(shuffleDep.shuffleId)
