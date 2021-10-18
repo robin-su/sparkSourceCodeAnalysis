@@ -37,6 +37,9 @@ import org.apache.spark.storage.BlockManagerId
 import org.apache.spark.util.{AccumulatorV2, SystemClock, ThreadUtils, Utils}
 
 /**
+ *
+ * TaskSchedulerImpl对Task的调度依赖于调度池Pool，所有需要被调度的TaskSet都被置于调度池中。调度池Pool通过调度算法对每个TaskSet进行调度，并将被调度的TaskSet交给TaskSchedulerImpl进行资源调度。
+ *
  * Schedules tasks for multiple types of clusters by acting through a SchedulerBackend.
  * It can also work with a local setup by using a `LocalSchedulerBackend` and setting
  * isLocal to true. It handles common logic, like determining a scheduling order across jobs, waking

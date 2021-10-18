@@ -286,6 +286,8 @@ private[spark] class DAGScheduler(
   }
 
   /**
+   * 用于对Task执行的结果进行处理。
+   *
    * Called by the TaskSetManager to report task completions or failures.
    */
   def taskEnded(
@@ -1390,10 +1392,13 @@ private[spark] class DAGScheduler(
    * but that's not our problem since there's nothing we can do about that.
    */
   private def updateAccumulators(event: CompletionEvent): Unit = {
+    // 获取任务
     val task = event.task
+    // 获取task对应的Stage
     val stage = stageIdToStage(task.stageId)
-
+    //
     event.accumUpdates.foreach { updates =>
+      // 获取updatesde
       val id = updates.id
       try {
         // Find the corresponding accumulator on the driver and update it
@@ -1447,6 +1452,7 @@ private[spark] class DAGScheduler(
    * modify the scheduler's internal state. Use taskEnded() to post a task end event from outside.
    */
   private[scheduler] def handleTaskCompletion(event: CompletionEvent) {
+    // 获取任务
     val task = event.task
     val stageId = task.stageId
 
@@ -1456,6 +1462,7 @@ private[spark] class DAGScheduler(
       task.partitionId,
       event.taskInfo.attemptNumber, // this is a task attempt number
       event.reason)
+
 
     if (!stageIdToStage.contains(task.stageId)) {
       // The stage may have already finished when we get this event -- eg. maybe it was a
@@ -1468,7 +1475,7 @@ private[spark] class DAGScheduler(
       // Skip all the actions if the stage has been cancelled.
       return
     }
-
+    // 获取task对应的Stage
     val stage = stageIdToStage(task.stageId)
 
     // Make sure the task's accumulators are updated before any other processing happens, so that
@@ -1482,7 +1489,7 @@ private[spark] class DAGScheduler(
             resultStage.activeJob match {
               case Some(job) =>
                 // Only update the accumulator once for each result task.
-                if (!job.finished(rt.outputId)) {
+                if (!job.finished(rt.outputId)) { // 若任务未完成
                   updateAccumulators(event)
                 }
               case None => // Ignore update if task's job has finished.
@@ -1501,16 +1508,20 @@ private[spark] class DAGScheduler(
           case rt: ResultTask[_, _] =>
             // Cast to ResultStage here because it's part of the ResultTask
             // TODO Refactor this out to a function that accepts a ResultStage
+            // 强制转换成
             val resultStage = stage.asInstanceOf[ResultStage]
             resultStage.activeJob match {
               case Some(job) =>
                 if (!job.finished(rt.outputId)) {
-                  job.finished(rt.outputId) = true
-                  job.numFinished += 1
+                  job.finished(rt.outputId) = true // 对应的任务分区状态设置为1
+                  job.numFinished += 1 // 将ActiveJob的已完成的任务数加1
                   // If the whole job has finished, remove it
+                  // 如果所有的任务都已经完成
                   if (job.numFinished == job.numPartitions) {
+                    // 将当前的Stage标记成已经完成
                     markStageAsFinished(resultStage)
                     cleanupStateForJobAndIndependentStages(job)
+                    // 向LiveListenerBus投递SparkListener-JobEnd事件。
                     listenerBus.post(
                       SparkListenerJobEnd(job.jobId, clock.getTimeMillis(), JobSucceeded))
                   }
@@ -1518,6 +1529,7 @@ private[spark] class DAGScheduler(
                   // taskSucceeded runs some user code that might throw an exception. Make sure
                   // we are resilient against that.
                   try {
+                    // 由JobWaiter的resultHandler函数来处理Job中每个Task的执行结果
                     job.listener.taskSucceeded(rt.outputId, event.result)
                   } catch {
                     case e: Exception =>
@@ -1546,6 +1558,7 @@ private[spark] class DAGScheduler(
             }
 
             if (runningStages.contains(shuffleStage) && shuffleStage.pendingPartitions.isEmpty) {
+              // 将ShuffleMapStage标记为完成
               markStageAsFinished(shuffleStage)
               logInfo("looking for newly runnable stages")
               logInfo("running: " + runningStages)
@@ -1563,6 +1576,7 @@ private[spark] class DAGScheduler(
 
               clearCacheLocs()
 
+              // 即_numAvailableOutputs与numPartitions不相等，那么说明有任务失败了，这时需要再次提交此ShuffleMapStage。
               if (!shuffleStage.isAvailable) {
                 // Some tasks had failed; let's resubmit this shuffleStage.
                 // TODO: Lower-level scheduler should also deal with this
