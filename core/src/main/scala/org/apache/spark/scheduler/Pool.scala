@@ -37,7 +37,7 @@ private[spark] class Pool(
 
   /**
    * 类型为ConcurrentLinkedQueue[Schedulable]，用于存储Schedulable。
-   * 由于Schedulable只有Pool和TaskSetManager两个实现类，schedulable-Queue是一个可以嵌套的层次结构
+   * 由于Schedulable只有Pool和TaskSetManager两个实现类，schedulableQueue是一个可以嵌套的层次结构
    * Spark的调度池中的调度队列与YARN中调度队列的设计非常相似，也采用了层级队列的管理方式。
    */
   val schedulableQueue = new ConcurrentLinkedQueue[Schedulable]

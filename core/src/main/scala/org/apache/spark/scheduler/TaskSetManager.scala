@@ -33,6 +33,9 @@ import org.apache.spark.util.{AccumulatorV2, Clock, LongAccumulator, SystemClock
 import org.apache.spark.util.collection.MedianHeap
 
 /**
+ * TaskSetManager也实现了Schedulable特质，并参与到调度池的调度中。TaskSetManager对TaskSet进行管理，包括任务推断、
+ * Task本地性，并对Task进行资源分配。TaskSchedulerImpl依赖于TaskSetManager，
+ *
  * Schedules the tasks within a single TaskSet in the TaskSchedulerImpl. This class keeps track of
  * each task, retries tasks if they fail (up to a limited number of times), and
  * handles locality-aware scheduling for this TaskSet via delay scheduling. The main interfaces
@@ -48,9 +51,9 @@ import org.apache.spark.util.collection.MedianHeap
  *                        task set will be aborted
  */
 private[spark] class TaskSetManager(
-    sched: TaskSchedulerImpl,
-    val taskSet: TaskSet,
-    val maxTaskFailures: Int,
+    sched: TaskSchedulerImpl, // 即TaskSetManager所属的TaskSchedulerImpl。
+    val taskSet: TaskSet, // 当前TaskSetManager管理的TaskSet。
+    val maxTaskFailures: Int, // 最大任务失败次数
     blacklistTracker: Option[BlacklistTracker] = None,
     clock: Clock = new SystemClock()) extends Schedulable with Logging {
 
@@ -60,10 +63,12 @@ private[spark] class TaskSetManager(
   private val addedJars = HashMap[String, Long](sched.sc.addedJars.toSeq: _*)
   private val addedFiles = HashMap[String, Long](sched.sc.addedFiles.toSeq: _*)
 
-  // Quantile of tasks at which to start speculation
+  // 开始推断执行的任务分数。可以通过spark.speculation. quantile属性进行配置，默认为0.75。
   val SPECULATION_QUANTILE = conf.getDouble("spark.speculation.quantile", 0.75)
+  // 推断的乘数。可通过spark.speculation.multiplier属性进行配置，默认为1.5。SPECULATION_MULTIPLIER将用于可推断执行Task的检查。
   val SPECULATION_MULTIPLIER = conf.getDouble("spark.speculation.multiplier", 1.5)
 
+  // 结果总大小的字节限制。可通过spark.driver.maxResultSize属性进行配置，默认为1GB。maxResultSize是通过调用Utils工具类的getMaxResultSize方法获得的
   val maxResultSize = conf.get(config.MAX_RESULT_SIZE)
 
   val speculationEnabled = conf.getBoolean("spark.speculation", false)
@@ -76,39 +81,87 @@ private[spark] class TaskSetManager(
   private[scheduler] val partitionToIndex = tasks.zipWithIndex
     .map { case (t, idx) => t.partitionId -> idx }.toMap
   val numTasks = tasks.length
+  /**
+   * 对每个Task的复制运行数进行记录的数组。copiesRunning按照索引与tasks数组的同一索引位置的Task相对应，记录对应Task的复制运行数量。
+   */
   val copiesRunning = new Array[Int](numTasks)
 
   // For each task, tracks whether a copy of the task has succeeded. A task will also be
   // marked as "succeeded" if it failed with a fetch failure, in which case it should not
   // be re-run because the missing map data needs to be regenerated first.
+  /**
+   * 对每个Task是否执行成功进行记录的数组。successful按照索引与tasks数组的同一索引位置的Task相对应，记录对应的Task是否执行成功。
+   */
   val successful = new Array[Boolean](numTasks)
+  /**
+   * 对每个Task的执行失败次数进行记录的数组。numFailures按照索引与tasks数组的同一索引位置的Task相对应，记录对应Task的执行失败次数。
+   */
   private val numFailures = new Array[Int](numTasks)
 
   // Add the tid of task into this HashSet when the task is killed by other attempt tasks.
   // This happened while we set the `spark.speculation` to true. The task killed by others
   // should not resubmit while executor lost.
   private val killedByOtherAttempt = new HashSet[Long]
-
+  /**
+   * 对每个Task的所有执行尝试信息进行记录的数组。taskAttempts按照索引与tasks数组的同一索引位置的Task相对应，
+   * 记录对应Task的所有Task尝试信息（即TaskInfo，读者暂时只需要知道这个对象即可）。
+   */
   val taskAttempts = Array.fill[List[TaskInfo]](numTasks)(Nil)
+  /**
+   * 执行成功的Task数量。
+   */
   private[scheduler] var tasksSuccessful = 0
-
+  /**
+   * 用于公平调度算法的权重。
+   */
   val weight = 1
+  /**
+   * 用于公平调度算法的参考值。
+   */
   val minShare = 0
+  /**
+   * 进行调度的优先级。
+   */
   var priority = taskSet.priority
+  /**
+   * 调度池所属的Stage的身份标识。
+   */
   var stageId = taskSet.stageId
+  /**
+   * TaskSetManager的名称，可能会参与到公平调度算法中。
+   */
   val name = "TaskSet_" + taskSet.id
+  /**
+   * TaskSetManager的父Pool。
+   */
   var parent: Pool = null
+  /**
+   * 所有Task执行结果的总大小。
+   */
   private var totalResultSize = 0L
+  /**
+   * 计算过的Task数量。
+   */
   private var calculatedTasks = 0
 
+  /**
+   * TaskSetManager所管理的TaskSet的Executor或节点的黑名单。
+   */
   private[scheduler] val taskSetBlacklistHelperOpt: Option[TaskSetBlacklist] = {
     blacklistTracker.map { _ =>
       new TaskSetBlacklist(sched.sc.listenerBus, conf, stageId, taskSet.stageAttemptId, clock)
     }
   }
 
+  /**
+   * 正在运行的Task的集合。
+   */
   private[scheduler] val runningTasksSet = new HashSet[Long]
 
+  /**
+   * 正在运行的Task的数量。runningTasks的值实际是通过调用running-TasksSet的size方法获取的。
+   * @return
+   */
   override def runningTasks: Int = runningTasksSet.size
 
   def someAttemptSucceeded(tid: Long): Boolean = {
@@ -121,6 +174,12 @@ private[spark] class TaskSetManager(
   // state until all tasks have finished running; we keep TaskSetManagers that are in the zombie
   // state in order to continue to track and account for the running tasks.
   // TODO: We should kill any running task attempts when the task set manager becomes a zombie.
+  /**
+   * 当TaskSetManager所管理的TaskSet中的所有Task都执行成功了，不再有更多的Task尝试被启动时，
+   * 就处于“僵尸”状态。例如，每个Task至少有一次尝试成功，或者TaskSet被舍弃了，TaskSetManager
+   * 将会进入“僵尸”状态。直到所有的Task都运行成功为止，TaskSetManager将一直保持在“僵尸”状态。
+   * TaskSetManager的“僵尸”状态并不是无用的，在这种状态下TaskSetManager将继续跟踪、记录正在运行的Task。
+   */
   private[scheduler] var isZombie = false
 
   // Whether the taskSet run tasks from a barrier stage. Spark must launch all the tasks at the
@@ -139,25 +198,47 @@ private[spark] class TaskSetManager(
   // of failures.
   // Duplicates are handled in dequeueTaskFromList, which ensures that a
   // task hasn't already started running before launching it.
+  /**
+   * 每个Executor上待处理的Task的集合，即Executor的身份标识与待处理Task的身份标识的集合之间的映射关系。
+   */
   private val pendingTasksForExecutor = new HashMap[String, ArrayBuffer[Int]]
 
   // Set of pending tasks for each host. Similar to pendingTasksForExecutor,
   // but at host level.
+  /**
+   * 每个Host上待处理的Task的集合，即Host与待处理Task的身份标识的集合之间的映射关系。
+   */
   private val pendingTasksForHost = new HashMap[String, ArrayBuffer[Int]]
 
+  /**
+   * 每个机架上待处理的Task的集合，即机架与待处理Task的身份标识的集合之间的映射关系。
+   */
   // Set of pending tasks for each rack -- similar to the above.
   private val pendingTasksForRack = new HashMap[String, ArrayBuffer[Int]]
 
+  /**
+   * 没有任何本地性偏好的待处理Task的身份标
+   */
   // Set containing pending tasks with no locality preferences.
   private[scheduler] var pendingTasksWithNoPrefs = new ArrayBuffer[Int]
 
+  /**
+   * 所有待处理的Task的身份标识的集合。
+   */
   // Set containing all pending tasks (also used as a stack, as above).
   private val allPendingTasks = new ArrayBuffer[Int]
 
+  /**
+   * 能够进行推断执行的Task的身份标识的集合。这类Task占所有Task的比例非常小。所谓推断执行，
+   * 是指当Task的一次尝试运行非常缓慢，根据推断，如果此时可以另起一次尝试运行，后来的尝试运行也比原先的尝试运行要快。
+   */
   // Tasks that can be speculated. Since these will be a small fraction of total
   // tasks, we'll just hold them in a HashSet.
   private[scheduler] val speculatableTasks = new HashSet[Int]
 
+  /**
+   * Task的身份标识与Task尝试的信息（如启动时间、完成时间等）之间的映射关系。
+   */
   // Task index, start and finish time for each task attempt (indexed by task ID)
   private[scheduler] val taskInfos = new HashMap[Long, TaskInfo]
 
@@ -166,6 +247,9 @@ private[spark] class TaskSetManager(
   // of inserting into the heap when the heap won't be used.
   val successfulTaskDurations = new MedianHeap()
 
+  /**
+   * 异常打印到日志的时间间隔。可通过spark. logging.exceptionPrintInterval属性进行配置，默认为10000。
+   */
   // How frequently to reprint duplicate exceptions in full, in milliseconds
   val EXCEPTION_PRINT_INTERVAL =
     conf.getLong("spark.logging.exceptionPrintInterval", 10000)
@@ -173,8 +257,14 @@ private[spark] class TaskSetManager(
   // Map of recent exceptions (identified by string representation and top stack frame) to
   // duplicate count (how many times the same exception has appeared) and time the full exception
   // was printed. This should ideally be an LRU map that can drop old exceptions automatically.
+  /**
+   * 类型为HashMap[String, (Int, Long)]，用于缓存异常信息、异常次数及最后发生此异常的时间之间的映射关系。此属性与EXCEPTION_PRINT_INTERVAL配合使用。
+   */
   private val recentExceptions = HashMap[String, (Int, Long)]()
 
+  /**
+   * 即MapOutputTracker的epoch，用于故障转移。
+   */
   // Figure out the current map output tracker epoch and set it on all tasks
   val epoch = sched.mapOutputTracker.getEpoch
   logDebug("Epoch for " + taskSet + ": " + epoch)
@@ -1007,6 +1097,8 @@ private[spark] class TaskSetManager(
   }
 
   /**
+   * 用于检查当前TaskSetManager中是否有需要推断的任务。
+   *
    * Check for tasks to be speculated and return true if there are any. This is called periodically
    * by the TaskScheduler.
    *

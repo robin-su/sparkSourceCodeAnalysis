@@ -34,11 +34,11 @@ import org.apache.spark.util.Utils
  * addTaskSetManager: build the leaf nodes(TaskSetManagers)
  */
 private[spark] trait SchedulableBuilder {
-  def rootPool: Pool
+  def rootPool: Pool // 返回根调度池
 
-  def buildPools(): Unit
+  def buildPools(): Unit // 对调度池进行构建
 
-  def addTaskSetManager(manager: Schedulable, properties: Properties): Unit
+  def addTaskSetManager(manager: Schedulable, properties: Properties): Unit // 向调度池内添加TaskSetManager
 }
 
 private[spark] class FIFOSchedulableBuilder(val rootPool: Pool)
@@ -49,6 +49,7 @@ private[spark] class FIFOSchedulableBuilder(val rootPool: Pool)
   }
 
   override def addTaskSetManager(manager: Schedulable, properties: Properties) {
+    // 向根调度池中添加TaskSetManager
     rootPool.addSchedulable(manager)
   }
 }
@@ -58,23 +59,43 @@ private[spark] class FairSchedulableBuilder(val rootPool: Pool, conf: SparkConf)
 //  spark.scheduler.allocation.file
   val SCHEDULER_ALLOCATION_FILE_PROPERTY = "spark.scheduler.allocation.file"
 //  调度分配策略文件
+  // 用户指定的文件系统中的调度分配文件。
+  // 此文件可以通过spark.scheduler.allocation.file属性配置，
+  // FairSchedulableBuilder将从文件系统中读取此文件提供的公平调度配置。
   val schedulerAllocFile = conf.getOption(SCHEDULER_ALLOCATION_FILE_PROPERTY)
+  // DEFAULT_SCHEDULER_FILE：默认的调度文件名。常量DEFAULT_SCHEDULER_FILE的值固定为"fairscheduler.xml",
+  // FairSchedulableBuilder将从ClassPath中读取此文件提供的公平调度配置
   val DEFAULT_SCHEDULER_FILE = "fairscheduler.xml"
+  // 此属性的值作为放置TaskSetManager的公平调度池的名称。
   val FAIR_SCHEDULER_PROPERTIES = "spark.scheduler.pool"
+  // 默认的调度池名。常量DEFAULT_POOL_NAME的值固定为"default"。
   val DEFAULT_POOL_NAME = "default"
+  // ：常量MINIMUM_SHARES_PROPERTY的值固定为"minShare"，即XML文件的<Pool>节点的子节点<mindshare>。
+  // 节点<mindshare>的值将作为Pool的minShare属性。
   val MINIMUM_SHARES_PROPERTY = "minShare"
+  // 常量SCHEDULING_MODE_PROPERTY的值固定为"schedulingMode"，即XML文件的<Pool>节点的子节点<schedulingMode>。
+  // 节点<schedulingMode>的值将作为Pool的调度模式（schedulingMode）属性。
   val SCHEDULING_MODE_PROPERTY = "schedulingMode"
+  // 权重属性。常量WEIGHT_PROPERTY的值固定为"weight"，即XML文件的<Pool>节点的子节点<weight>。
+  // 节点<weight>的值将作为Pool的权重（weight）属性。
   val WEIGHT_PROPERTY = "weight"
+  // 常量POOL_NAME_PROPERTY的值固定为"@name"，即XML文件的<Pool>节点的name属性。
+  // name属性的值将作为Pool的调度池名（poolName）属性。
   val POOL_NAME_PROPERTY = "@name"
+  // 调度池属性。常量POOLS_PROPERTY的值固定为"pool"。
   val POOLS_PROPERTY = "pool"
+  // 调度池属性。常量POOLS_PROPERTY的值固定为"pool"。
   val DEFAULT_SCHEDULING_MODE = SchedulingMode.FIFO
+  // 公平调度算法中Schedulable的minShare属性的默认值。常量DEFAULT_MINIMUM_SHARE的值固定为0。
   val DEFAULT_MINIMUM_SHARE = 0
+  // 默认的权重。常量DEFAULT_WEIGHT的值固定为1。
   val DEFAULT_WEIGHT = 1
 
   override def buildPools() {
     var fileData: Option[(InputStream, String)] = None
     try {
       fileData = schedulerAllocFile.map { f =>
+        // 从文件系统中获取公平调度配置文件输入流
         val fis = new FileInputStream(f)
         logInfo(s"Creating Fair Scheduler pools from $f")
         Some((fis, f))
@@ -91,6 +112,7 @@ private[spark] class FairSchedulableBuilder(val rootPool: Pool, conf: SparkConf)
         }
       }
 
+      // 解析文件输入流并构建调度池
       fileData.foreach { case (is, fileName) => buildFairSchedulerPool(is, fileName) }
     } catch {
       case NonFatal(t) =>
@@ -109,8 +131,10 @@ private[spark] class FairSchedulableBuilder(val rootPool: Pool, conf: SparkConf)
 
   private def buildDefaultPool() {
     if (rootPool.getSchedulableByName(DEFAULT_POOL_NAME) == null) {
+      // 创建默认调度池
       val pool = new Pool(DEFAULT_POOL_NAME, DEFAULT_SCHEDULING_MODE,
         DEFAULT_MINIMUM_SHARE, DEFAULT_WEIGHT)
+      // 向跟调度池的调度队列中添加默认的子调度池
       rootPool.addSchedulable(pool)
       logInfo("Created default pool: %s, schedulingMode: %s, minShare: %d, weight: %d".format(
         DEFAULT_POOL_NAME, DEFAULT_SCHEDULING_MODE, DEFAULT_MINIMUM_SHARE, DEFAULT_WEIGHT))
@@ -118,9 +142,11 @@ private[spark] class FairSchedulableBuilder(val rootPool: Pool, conf: SparkConf)
   }
 
   private def buildFairSchedulerPool(is: InputStream, fileName: String) {
+    // 将文件输入流转换为XML
     val xml = XML.load(is)
+    // 读取XML的每一个<Pool>节点
     for (poolNode <- (xml \\ POOLS_PROPERTY)) {
-
+      // 读取<Pool>的name属性作为调度池的名称
       val poolName = (poolNode \ POOL_NAME_PROPERTY).text
 
       val schedulingMode = getSchedulingModeValue(poolNode, poolName,
@@ -129,7 +155,7 @@ private[spark] class FairSchedulableBuilder(val rootPool: Pool, conf: SparkConf)
         DEFAULT_MINIMUM_SHARE, fileName)
       val weight = getIntValue(poolNode, poolName, WEIGHT_PROPERTY,
         DEFAULT_WEIGHT, fileName)
-
+      // 将创建的子调度池添加到根调度池的调度队列
       rootPool.addSchedulable(new Pool(poolName, schedulingMode, minShare, weight))
 
       logInfo("Created pool: %s, schedulingMode: %s, minShare: %d, weight: %d".format(
@@ -187,6 +213,7 @@ private[spark] class FairSchedulableBuilder(val rootPool: Pool, conf: SparkConf)
       } else {
         DEFAULT_POOL_NAME
       }
+    // 以默认调度池作为TaskManger的父调度池
     var parentPool = rootPool.getSchedulableByName(poolName)
     if (parentPool == null) {
       // we will create a new pool that user has configured in app

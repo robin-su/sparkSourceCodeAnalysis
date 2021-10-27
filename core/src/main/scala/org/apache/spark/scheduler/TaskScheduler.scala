@@ -35,7 +35,7 @@ import org.apache.spark.util.AccumulatorV2
 private[spark] trait TaskScheduler {
 
   private val appId = "spark-application-" + System.currentTimeMillis
-
+  // 跟调度队列
   def rootPool: Pool
 
   def schedulingMode: SchedulingMode
