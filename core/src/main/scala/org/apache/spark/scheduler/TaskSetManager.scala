@@ -383,6 +383,9 @@ private[spark] class TaskSetManager(
     None
   }
 
+  /**
+   * 检查任务是否曾经在给定主机上尝试运行过
+   */
   /** Check whether a task once ran an attempt on a given host */
   private def hasAttemptOnHost(taskIndex: Int, host: String): Boolean = {
     taskAttempts(taskIndex).exists(_.host == host)
@@ -396,6 +399,8 @@ private[spark] class TaskSetManager(
   }
 
   /**
+   * 用于根据指定的Host、Executor和本地性级别，从可推断的Task中找出可推断的Task在TaskSet中的索引和相应的本地性级别。
+   *
    * Return a speculative task for a given executor if any are available. The task should not have
    * an attempt running on this host, in case the host is slow. In addition, the task should meet
    * the given locality constraint.
@@ -404,32 +409,43 @@ private[spark] class TaskSetManager(
   protected def dequeueSpeculativeTask(execId: String, host: String, locality: TaskLocality.Value)
     : Option[(Int, TaskLocality.Value)] =
   {
+    // 从speculatableTasks中移除已经完成的Task，保留还未完成的Task。
     speculatableTasks.retain(index => !successful(index)) // Remove finished tasks from set
 
     def canRunOnHost(index: Int): Boolean = {
+      // 未在指定的Host上尝试运行
       !hasAttemptOnHost(index, host) &&
+      // 且指定的Host和Executor不在黑名单的所有task
         !isTaskBlacklistedOnExecOrNode(index, execId, host)
     }
 
+    // 若未完成的task不为空
     if (!speculatableTasks.isEmpty) {
       // Check for process-local tasks; note that tasks can be process-local
       // on multiple nodes when we replicate cached blocks, as in Spark Streaming
       for (index <- speculatableTasks if canRunOnHost(index)) {
+        // 获取Task偏好的Executor
         val prefs = tasks(index).preferredLocations
         val executors = prefs.flatMap(_ match {
           case e: ExecutorCacheTaskLocation => Some(e.executorId)
           case _ => None
         });
+        // 若task所偏好的Executor包含指定的Executor（由execId确定）
         if (executors.contains(execId)) {
+          // 从speculatableTasks中移除Task
           speculatableTasks -= index
+          // 返回Task的索引与PROCESS_LOCAL的对偶
           return Some((index, TaskLocality.PROCESS_LOCAL))
         }
       }
 
       // Check for node-local tasks
       if (TaskLocality.isAllowed(locality, TaskLocality.NODE_LOCAL)) {
+        // 如果指定的本地性级别小于等于NODE_LOCAL，对speculatableTasks中所有未在指定的Host上尝试运行，且指定的Host和Executor不在黑名单的所有Task
         for (index <- speculatableTasks if canRunOnHost(index)) {
+          // 获取Task偏好的Host
           val locations = tasks(index).preferredLocations.map(_.host)
+          // 如果Task偏好的Host中包含指定的Host，那么将此Task的索引从speculatableTasks中移除，并返回此Task的索引与NODE_LOCAL的对偶。
           if (locations.contains(host)) {
             speculatableTasks -= index
             return Some((index, TaskLocality.NODE_LOCAL))
@@ -437,6 +453,11 @@ private[spark] class TaskSetManager(
         }
       }
 
+      /**
+       * 如果指定的本地性级别小于等于NO_PREF，对于speculatableTasks中的所有未在指定的Host上尝试运行，且指定的Host和Executor不在黑名单的所有Task进行以下处理：
+       * ① 获取Task偏好的位置；
+       * ② 如果Task没有偏好的位置信息，那么将此Task的索引从speculatableTasks中移除，并返回此Task的索引与PROCESS_LOCAL的对偶。
+       */
       // Check for no-preference tasks
       if (TaskLocality.isAllowed(locality, TaskLocality.NO_PREF)) {
         for (index <- speculatableTasks if canRunOnHost(index)) {
@@ -448,6 +469,9 @@ private[spark] class TaskSetManager(
         }
       }
 
+      /**
+       * 如果指定的本地性级别小于等于RACK_LOCAL，对于speculatableTasks中的所有未在指定的Host上尝试运行，且指定的Host和Executor不在黑名单的所有Task进行以下处理：
+       */
       // Check for rack-local tasks
       if (TaskLocality.isAllowed(locality, TaskLocality.RACK_LOCAL)) {
         for (rack <- sched.getRackForHost(host)) {
@@ -461,6 +485,12 @@ private[spark] class TaskSetManager(
         }
       }
 
+      /**
+       * 如果指定的本地性级别小于等于ANY，对于speculatableTasks中的所有未在指定的Host上尝试运行，
+       * 且指定的Host和Executor不在黑名单的所有Task进行以下处理：
+       * ① 将此Task的索引从speculatableTasks中移除；
+       * ② 返回此Task的索引与ANY的对偶。
+       */
       // Check for non-local tasks
       if (TaskLocality.isAllowed(locality, TaskLocality.ANY)) {
         for (index <- speculatableTasks if canRunOnHost(index)) {
@@ -1107,15 +1137,21 @@ private[spark] class TaskSetManager(
     // Can't speculate if we only have one task, and no need to speculate if the task set is a
     // zombie or is from a barrier stage.
     if (isZombie || isBarrier || numTasks == 1) {
-      return false
+      return false // 没有可推断的task
     }
     var foundTasks = false
+    // 计算进行推断的最小完成任务数量（minFinishedForSpeculation），即SPECULATION_QUANTILE（开始推断的任务分数）
+    // 与numTasks（TaskSet包含的Task的数量）的乘积向下取整。
     val minFinishedForSpeculation = (SPECULATION_QUANTILE * numTasks).floor.toInt
     logDebug("Checking for speculative tasks: minFinished = " + minFinishedForSpeculation)
-
+    // 若执行成功的task数量大于
     if (tasksSuccessful >= minFinishedForSpeculation && tasksSuccessful > 0) {
       val time = clock.getTimeMillis()
+      // 处于中间的执行时间
       val medianDuration = successfulTaskDurations.median
+      /**
+       * 计算进行推断的最小时间（threshold），即SPECULATION_MULTIPLIER与median-Duration的乘积和minTimeToSpeculation中的最大值。
+       */
       val threshold = max(SPECULATION_MULTIPLIER * medianDuration, minTimeToSpeculation)
       // TODO: Threshold should also look at standard deviation of task durations and have a lower
       // bound based on that.
@@ -1123,6 +1159,11 @@ private[spark] class TaskSetManager(
       for (tid <- runningTasksSet) {
         val info = taskInfos(tid)
         val index = info.index
+
+        /**
+         * 遍历taskInfos，将符合推断条件的Task在TaskSet中的索引放入speculatableTasks中。推断条件包括还未执行成功、复制运行数为一、
+         * 运行时间大于threshold。如果有Task的索引被放入了speculatableTasks，那么返回true。
+         */
         if (!successful(index) && copiesRunning(index) == 1 && info.timeRunning(time) > threshold &&
           !speculatableTasks.contains(index)) {
           logInfo(
