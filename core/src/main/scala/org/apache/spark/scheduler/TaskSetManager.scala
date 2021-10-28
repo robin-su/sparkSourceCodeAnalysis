@@ -301,7 +301,13 @@ private[spark] class TaskSetManager(
 
   private[scheduler] var emittedTaskSizeWarning = false
 
-  /** Add a task to all the pending-task lists that it should be on. */
+  /**
+   * addPendingTask方法（见代码清单7-68）用于将待处理Task的索引按照Task的偏好位置，
+   * 添加到pendingTasksForExecutor、pendingTasksForHost、pendingTasksForRack、
+   * pending-TasksWithNoPrefs、allPendingTasks等缓存中。
+   *
+   * Add a task to all the pending-task lists that it should be on.
+   */
   private[spark] def addPendingTask(index: Int) {
     for (loc <- tasks(index).preferredLocations) {
       loc match {
@@ -359,6 +365,8 @@ private[spark] class TaskSetManager(
   }
 
   /**
+   * 用于从给定的Task列表中按照索引，从高到低找出满足条件（不在黑名单中、Task的复制运行数等于0、Task没有成功）的Task的索引。
+   *
    * Dequeue a pending task from the given list and return its index.
    * Return None if the list is empty.
    * This method also cleans up any tasks in the list that have already
@@ -504,6 +512,8 @@ private[spark] class TaskSetManager(
   }
 
   /**
+   * 用于根据指定的Host、Executor和本地性级别，找出要执行的Task的索引、相应的本地性级别及是否进行推断执行
+   *
    * Dequeue a pending task for a given node and return its index and locality level.
    * Only search for tasks matching the given locality constraint.
    *
@@ -647,6 +657,8 @@ private[spark] class TaskSetManager(
     }
   }
 
+
+
   private def maybeFinishTaskSet() {
     if (isZombie && runningTasks == 0) {
       sched.taskSetFinished(this)
@@ -680,6 +692,11 @@ private[spark] class TaskSetManager(
     // Walk through the list of tasks that can be scheduled at each location and returns true
     // if there are any tasks that still need to be scheduled. Lazily cleans up tasks that have
     // already been scheduled.
+    /**
+     * 判断本地性级别对应的待处理Task的缓存结构中是否有Task需要处理。
+     * @param pendingTasks
+     * @return
+     */
     def moreTasksToRunIn(pendingTasks: HashMap[String, ArrayBuffer[Int]]): Boolean = {
       val emptyKeys = new ArrayBuffer[String]
       val hasTasks = pendingTasks.exists {
@@ -848,6 +865,8 @@ private[spark] class TaskSetManager(
   }
 
   /**
+   * 用于对Task的执行结果（对于map任务而言，实际是任务状态）进行处理。
+   *
    * Marks a task as successful and notifies the DAGScheduler that the task has ended.
    */
   def handleSuccessfulTask(tid: Long, result: DirectTaskResult[_]): Unit = {
@@ -1057,7 +1076,11 @@ private[spark] class TaskSetManager(
     maybeFinishTaskSet()
   }
 
-  /** If the given task ID is not in the set of running tasks, adds it.
+  /**
+   * 用于向runningTasksSet中添加Task的身份标识，并调用TaskSetManager的父调度池的increaseRunningTasks方法,
+   * 增加父调度池及祖父调度池中记录的当前正在运行的任务数量
+   *
+   * If the given task ID is not in the set of running tasks, adds it.
    *
    * Used to keep track of the number of running tasks, for enforcing scheduling policies.
    */
@@ -1088,12 +1111,19 @@ private[spark] class TaskSetManager(
     sortedTaskSetQueue
   }
 
-  /** Called by TaskScheduler when an executor is lost so we can re-enqueue our tasks */
+  /**
+   * executorLost方法在发生Executor丢失的情况下被调用
+   *
+   * Called by TaskScheduler when an executor is lost so we can re-enqueue our tasks
+   */
   override def executorLost(execId: String, host: String, reason: ExecutorLossReason) {
     // Re-enqueue any tasks that ran on the failed executor if this is a shuffle map stage,
     // and we are not using an external shuffle server which could serve the shuffle outputs.
     // The reason is the next stage wouldn't be able to fetch the data from this dead executor
     // so we would need to rerun these tasks on other executors.
+    /**
+     * 如果TaskSetManager管理的TaskSet中的Task为ShuffleMapTask，并且应用没有提供外部的Shuffle服务
+     */
     if (tasks(0).isInstanceOf[ShuffleMapTask] && !env.blockManager.externalShuffleServiceEnabled
         && !isZombie) {
       for ((tid, info) <- taskInfos if info.executorId == execId) {
@@ -1178,16 +1208,23 @@ private[spark] class TaskSetManager(
     foundTasks
   }
 
+  /**
+   * getLocalityWait方法（见代码清单7-65）用于获取某个本地性级别的等待时间。
+   *
+   * @param level
+   * @return
+   */
   private def getLocalityWait(level: TaskLocality.TaskLocality): Long = {
     val defaultWait = conf.get(config.LOCALITY_WAIT)
-    val localityWaitKey = level match {
+    val localityWaitKey = level match
+      // 获取默认的等待时间
       case TaskLocality.PROCESS_LOCAL => "spark.locality.wait.process"
       case TaskLocality.NODE_LOCAL => "spark.locality.wait.node"
       case TaskLocality.RACK_LOCAL => "spark.locality.wait.rack"
       case _ => null
     }
 
-    if (localityWaitKey != null) {
+    if (localityWaitKey != null) { // 获取本地级别对应的等待时间
       conf.getTimeAsMs(localityWaitKey, defaultWait.toString)
     } else {
       0L
@@ -1202,22 +1239,43 @@ private[spark] class TaskSetManager(
   private def computeValidLocalityLevels(): Array[TaskLocality.TaskLocality] = {
     import TaskLocality.{PROCESS_LOCAL, NODE_LOCAL, NO_PREF, RACK_LOCAL, ANY}
     val levels = new ArrayBuffer[TaskLocality.TaskLocality]
+
+    /**
+     * 如果存在Executor上待处理的Task的集合（即pendingTasksForExecutor不为空）且PROCESS_LOCAL级别的等待时间不为0，
+     * 还存在已被激活的Executor（即pendingTasks-ForExecutor中的ExecutorId有存在于TaskSchedulerImpl的executorIdToRunningTaskIds中的），
+     * 那么允许的本地性级别里包括PROCESS_LOCAL。
+     */
     if (!pendingTasksForExecutor.isEmpty &&
         pendingTasksForExecutor.keySet.exists(sched.isExecutorAlive(_))) {
-      levels += PROCESS_LOCAL
+      levels += PROCESS_LOCAL // 允许的本地行级别里包括 PROCESS_LOCAL
     }
+
+    /**
+     * 如果存在Host上待处理的Task的集合（即pendingTasksForHost不为空）且NODE_LOCAL级别的等待时间不为0，除此以外，
+     * Host上存在已被激活的Executor（即pending-TasksForHost中的Host有存在于TaskSchedulerImpl的hostToExecutors中的）
+     * ，那么允许的本地性级别里包括NODE_LOCAL。
+     */
     if (!pendingTasksForHost.isEmpty &&
         pendingTasksForHost.keySet.exists(sched.hasExecutorsAliveOnHost(_))) {
-      levels += NODE_LOCAL
+      levels += NODE_LOCAL // 允许的本地性级别里包括NODE_LOCAL
     }
+
+    /**
+     * 如果存在没有任何本地性偏好的待处理Task，那么允许的本地性级别里包括NO_PREF。
+     */
     if (!pendingTasksWithNoPrefs.isEmpty) {
-      levels += NO_PREF
+      levels += NO_PREF  // 允许的本地性级别里包含NO_PREF
     }
+
+    /**
+     * 如果存在机架上待处理的Task的集合（即pendingTasksForRack不为空）且RACK_LOCAL级别的等待时间不为0，
+     * 除此以外，机架上存在已被激活的Executor（即pending TasksForRack中的机架有存在于TaskSchedulerImpl的hostsByRack中的），那么允许的本地性级别里包括RACK_LOCAL。
+     */
     if (!pendingTasksForRack.isEmpty &&
         pendingTasksForRack.keySet.exists(sched.hasHostAliveOnRack(_))) {
-      levels += RACK_LOCAL
+      levels += RACK_LOCAL // 允许本地性级别里包括RACK_LOCAL
     }
-    levels += ANY
+    levels += ANY //  允许本地性级别里包括 ANY
     logDebug("Valid locality levels for " + taskSet + ": " + levels.mkString(", "))
     levels.toArray
   }

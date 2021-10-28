@@ -49,6 +49,10 @@ abstract class LauncherConnection implements Closeable, Runnable {
 
   protected abstract void handle(Message msg) throws IOException;
 
+  /**
+   * 由于LauncherConnection实现了java.lang.Runnable接口，因此需要实现run方法。LauncherConnection的run方法
+   * 用于从Socket客户端的输入流中读取LauncherServer发送的消息，并调用handle方法对消息进行处理。LauncherConnection的run方法同时也是一个模板方法。
+   */
   @Override
   public void run() {
     try {
@@ -76,6 +80,12 @@ abstract class LauncherConnection implements Closeable, Runnable {
     }
   }
 
+  /**
+   * 此方法通过Socket客户端与LauncherServer的Socket服务端建立的连接向LauncherServer发送消息
+   *
+   * @param msg
+   * @throws IOException
+   */
   protected synchronized void send(Message msg) throws IOException {
     try {
       CommandBuilderUtils.checkState(!closed, "Disconnected.");
@@ -94,6 +104,10 @@ abstract class LauncherConnection implements Closeable, Runnable {
     }
   }
 
+  /**
+   * 此方法用于关闭Socket客户端与LauncherServer的Socket服务端建立的连接
+   * @throws IOException
+   */
   @Override
   public synchronized void close() throws IOException {
     if (isOpen()) {

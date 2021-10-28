@@ -18,19 +18,28 @@
 package org.apache.spark.scheduler
 
 /**
+ * SchedulerBackend是TaskScheduler的调度后端接口。TaskScheduler给Task分配资源实际是通过SchedulerBackend来完成的，
+ * SchedulerBackend给Task分配完资源后将与分配给Task的Executor通信，并要求后者运行Task
+ *
  * A backend interface for scheduling systems that allows plugging in different ones under
  * TaskSchedulerImpl. We assume a Mesos-like model where the application gets resource offers as
  * machines become available and can launch tasks on them.
  */
 private[spark] trait SchedulerBackend {
+//  与当前Job相关联的应用程序的身份标识
   private val appId = "spark-application-" + System.currentTimeMillis
-
+  // 启动SchedulerBackend
   def start(): Unit
+  // 停止SchedulerBackend
   def stop(): Unit
+  // 给调度池中的所有Task分配资源。
   def reviveOffers(): Unit
+  // 获取Job的默认并行度。
   def defaultParallelism(): Int
 
   /**
+   * “杀死”指定的任务。可以通过设置interruptThread为true来中断任务执行线程。
+   *
    * Requests that an executor kills a running task.
    *
    * @param taskId Id of the task.
@@ -45,9 +54,15 @@ private[spark] trait SchedulerBackend {
       reason: String): Unit =
     throw new UnsupportedOperationException
 
+  /**
+   * SchedulerBackend是否准备就绪
+   * @return
+   */
   def isReady(): Boolean = true
 
   /**
+   * 与当前Job相关联的应用程序的身份标识。
+   *
    * Get an application ID associated with the job.
    *
    * @return An application ID
@@ -55,6 +70,9 @@ private[spark] trait SchedulerBackend {
   def applicationId(): String = appId
 
   /**
+   * 当应用在cluster模式运行且集群管理器支持应用进行多次执行尝试时，此方法可以获取应用程序尝试的标识。
+   * 当应用程序在client模式运行时，将不支持多次尝试，因此此方法不会获取到应用程序尝试的标识。
+   *
    * Get the attempt ID for this run, if the cluster manager supports multiple
    * attempts. Applications run in client mode will not have attempt IDs.
    *

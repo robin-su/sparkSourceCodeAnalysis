@@ -24,6 +24,10 @@ import org.apache.spark.launcher.LauncherProtocol._
 import org.apache.spark.util.{ThreadUtils, Utils}
 
 /**
+ * 当Spark应用程序没有在用户应用程序中运行，而是运行在单独的进程中时，用户可以在用户应用程序中使用LauncherServer与Spark应用程序通信。
+ * LauncherServer将提供Socket连接的服务端，与Spark应用程序中的Socket连接的客户端通信。
+ *
+ *
  * A class that can be used to talk to a launcher server. Users should extend this class to
  * provide implementation for the abstract methods.
  *
@@ -31,17 +35,40 @@ import org.apache.spark.util.{ThreadUtils, Utils}
  */
 private[spark] abstract class LauncherBackend {
 
+  /**
+   * 读取与LauncherServer建立的Socket连接上的消息的线程。
+   */
   private var clientThread: Thread = _
+  /**
+   * 即BackendConnection实例。
+   */
   private var connection: BackendConnection = _
+  /**
+   * LauncherBackend的最后一次状态。lastState的类型是枚举类型SparkAppHandle.State。
+   * SparkAppHandle.State共有未知（UNKNOWN）、已连接（CONNECTED）、已提交（SUBMITTED）、
+   * 运行中（RUNNING）、已完成（FINISHED）、已失败（FAILED）、已被杀（KILLED）、丢失（LOST）等状态。
+   */
   private var lastState: SparkAppHandle.State = _
+  /**
+   * clientThread是否与LauncherServer已经建立了Socket连接的状态。
+   */
   @volatile private var _isConnected = false
 
   protected def conf: SparkConf
 
+  /**
+   * 调用该方法构建BackendConnection
+   */
   def connect(): Unit = {
+    /**
+     * LauncherServer的Socket端口，通过spark.launcher.port，或环境变量中_SPARK_LAUNCHER_PORT的配置获取
+     */
     val port = conf.getOption(LauncherProtocol.CONF_LAUNCHER_PORT)
       .orElse(sys.env.get(LauncherProtocol.ENV_LAUNCHER_PORT))
       .map(_.toInt)
+    /**
+     * 密钥，通过spark.launcher.secret或者
+     */
     val secret = conf.getOption(LauncherProtocol.CONF_LAUNCHER_SECRET)
       .orElse(sys.env.get(LauncherProtocol.ENV_LAUNCHER_SECRET))
     if (port != None && secret != None) {
@@ -66,12 +93,21 @@ private[spark] abstract class LauncherBackend {
     }
   }
 
+  /**
+   * 用于向LauncherServer发送SetAppId消息
+   * @param appId
+   */
   def setAppId(appId: String): Unit = {
     if (connection != null && isConnected) {
       connection.send(new SetAppId(appId))
     }
   }
 
+  /**
+   * 用于向LauncherServer发送SetState消息
+   *
+   * @param state
+   */
   def setState(state: SparkAppHandle.State): Unit = {
     if (connection != null && isConnected && lastState != state) {
       connection.send(new SetState(state))
@@ -79,6 +115,9 @@ private[spark] abstract class LauncherBackend {
     }
   }
 
+  /**
+   * isConnected方法返回clientThread是否与LauncherServer已经建立了Socket连接的状态。
+   */
   /** Return whether the launcher handle is still connected to this backend. */
   def isConnected(): Boolean = _isConnected
 
@@ -102,6 +141,12 @@ private[spark] abstract class LauncherBackend {
     thread.start()
   }
 
+  /**
+   * 构造BackendConnection的过程中，BackendConnection会和LauncherServer之间建立起Socket连接。
+   * BackendConnection（实现了java.lang.Runnable接口）将不断从Socket连接中读取LauncherServer发送的数据。
+   *
+   * @param s
+   */
   private class BackendConnection(s: Socket) extends LauncherConnection(s) {
 
     override protected def handle(m: Message): Unit = m match {
