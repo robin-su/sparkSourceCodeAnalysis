@@ -22,8 +22,8 @@ import org.apache.spark.storage.BlockManagerId
 import org.apache.spark.util.AccumulatorV2
 
 /**
- *
- *
+ * 任务调度器TaskScheduler定义了对任务进行调度的接口规范，允许向Spark调度系统插入不同的TaskScheduler实现，但目前只有TaskSchedulerImpl这一个具体实现。
+ * TaskScheduler只为单个Driver调度任务，
  * Low-level task scheduler interface, currently implemented exclusively by
  * [[org.apache.spark.scheduler.TaskSchedulerImpl]].
  * This interface allows plugging in different task schedulers. Each TaskScheduler schedules tasks

@@ -45,17 +45,20 @@ private case class StopExecutor()
  */
 private[spark] class LocalEndpoint(
     override val rpcEnv: RpcEnv,
-    userClassPath: Seq[URL],
-    scheduler: TaskSchedulerImpl,
-    executorBackend: LocalSchedulerBackend,
-    private val totalCores: Int)
+    userClassPath: Seq[URL], // 用户指定的ClassPath。
+    scheduler: TaskSchedulerImpl, // 即Driver中的TaskSchedulerImpl。
+    executorBackend: LocalSchedulerBackend, // 与LocalEndpoint相关联的LocalSchedulerBackend。
+    private val totalCores: Int) // 用于执行任务的CPU内核总数。local模式下，totalCores固定为1。
   extends ThreadSafeRpcEndpoint with Logging {
 
-  private var freeCores = totalCores
+  private var freeCores = totalCores // 空闲的CPU内核数。应用程序提交的Task正式运行之前，freeCores与totalCores相等。
 
+  // local部署模式下，与Driver处于同一JVM进程的Executor的身份标识。由于LocalEndpoint只在local模式中使用，因此localExecutorId固定为driver。
   val localExecutorId = SparkContext.DRIVER_IDENTIFIER
+  // 与Driver处于同一JVM进程的Executor所在的Host。由于LocalEndpoint只在local模式中使用，因此localExecutorHostname固定为localhost。
   val localExecutorHostname = "localhost"
 
+  //与Driver处于同一JVM进程的Executor。由于LocalEndpoint的totalCores等于1，因此应用本地有且只有一个Executor，且此Executor在LocalEndpoint构造的过程中就已经实例化。
   private val executor = new Executor(
     localExecutorId, localExecutorHostname, SparkEnv.get, userClassPath, isLocal = true)
 
@@ -81,16 +84,21 @@ private[spark] class LocalEndpoint(
   }
 
   def reviveOffers() {
+    // 创建只包含一个WorkerOffer（理解为“就业机会”似乎更加生动，由于totalCores为1，因此只有一个职位）的序列
     val offers = IndexedSeq(new WorkerOffer(localExecutorId, localExecutorHostname, freeCores,
       Some(rpcEnv.address.hostPort)))
-    for (task <- scheduler.resourceOffers(offers).flatten) {
+    for (task <- scheduler.resourceOffers(offers).flatten) { // 给Task分配资源
+      // 将空闲的CPU内核数freeCores减去1
       freeCores -= scheduler.CPUS_PER_TASK
-      executor.launchTask(executorBackend, task)
+      executor.launchTask(executorBackend, task) // 运行task
     }
   }
 }
 
 /**
+ * LocalSchedulerBackend:local模式中的调度后端接口。
+ * 在local模式下，Executor、LocalSchedulerBackend、Driver都运行在同一个JVM进程中。
+ *
  * Used when running a local version of Spark where the executor, backend, and master all run in
  * the same JVM. It sits behind a [[TaskSchedulerImpl]] and handles launching tasks on a single
  * Executor (created by the [[LocalSchedulerBackend]]) running locally.
@@ -100,11 +108,14 @@ private[spark] class LocalSchedulerBackend(
     scheduler: TaskSchedulerImpl,
     val totalCores: Int)
   extends SchedulerBackend with ExecutorBackend with Logging {
-
+//  当前应用程序的身份标识。local模式下的appId以local-为前缀，以系统当前时间戳为后缀，local模式下应用程序的身份标识是在构造LocalSchedulerBackend的时候生成的。
   private val appId = "local-" + System.currentTimeMillis
+  // 即SparkContext中创建的LiveListenerBus
   private var localEndpoint: RpcEndpointRef = null
-  private val userClassPath = getUserClasspath(conf)
-  private val listenerBus = scheduler.sc.listenerBus
+  private val userClassPath = getUserClasspath(conf) // 用户指定的类路径。可以通过spark.executor.extraClassPath属性进行配置，配置时可以用英文逗号分隔多个类路径。
+  private val listenerBus = scheduler.sc.listenerBus // 即SparkContext中创建的LiveListenerBus
+  // LauncherBackend的匿名实现类的实例。此匿名实现类实现了LauncherBackend的onStopRequest方法，用于停止Executor、
+  // 将launcherBackend的状态标记为KILLED、关闭launcherBackend与LauncherServer之间的Socket连接
   private val launcherBackend = new LauncherBackend() {
     override def conf: SparkConf = LocalSchedulerBackend.this.conf
     override def onStopRequest(): Unit = stop(SparkAppHandle.State.KILLED)
@@ -125,12 +136,16 @@ private[spark] class LocalSchedulerBackend(
   override def start() {
     val rpcEnv = SparkEnv.get.rpcEnv
     val executorEndpoint = new LocalEndpoint(rpcEnv, userClassPath, scheduler, this, totalCores)
+    // 向LiveListenerBus投递SparkListenerExecutorAdded事件。local模式下SparkListener
+    // ExecutorAdded事件携带的time为系统当前时间，executorId为driver, executorInfo（即ExecutorInfo, ExecutorInfo的executorHost属性为localhost, totalCores为1, logUrlMap为空）。
     localEndpoint = rpcEnv.setupEndpoint("LocalSchedulerBackendEndpoint", executorEndpoint)
     listenerBus.post(SparkListenerExecutorAdded(
       System.currentTimeMillis,
       executorEndpoint.localExecutorId,
       new ExecutorInfo(executorEndpoint.localExecutorHostname, totalCores, Map.empty)))
+    // 调用LauncherBackend的setAppId方法向LauncherServer发送SetAppId消息。
     launcherBackend.setAppId(appId)
+    // 调用LauncherBackend的setAppId方法向LauncherServer发送SetAppId消息。
     launcherBackend.setState(SparkAppHandle.State.RUNNING)
   }
 

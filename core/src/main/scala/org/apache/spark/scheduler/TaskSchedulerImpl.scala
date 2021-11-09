@@ -38,6 +38,13 @@ import org.apache.spark.util.{AccumulatorV2, SystemClock, ThreadUtils, Utils}
 
 /**
  *
+ * TaskSchedulerImpl的功能包括接收DAGScheduler给每个Stage创建的Task集合，按照调度算法将资源分配给Task，将Task交给Spark集群不同节点上的Executor运行，
+ * 在这些Task执行失败时进行重试，通过推断执行减轻落后的Task对整体作业进度的影响。
+ *
+ * Spark的资源调度分为两层：
+ * 第一层是Cluster Manager（在YARN模式下为Resource Manager，在Mesos模式下为Mesos Master，在Standalone模式下为Master）将资源分配给Application；
+ * 第二层是Application进一步将资源分配给Application的各个Task。TaskSchedulerImpl中的资源调度就是第二层的资源调度。
+ *
  * TaskSchedulerImpl对Task的调度依赖于调度池Pool，所有需要被调度的TaskSet都被置于调度池中。调度池Pool通过调度算法对每个TaskSet进行调度，并将被调度的TaskSet交给TaskSchedulerImpl进行资源调度。
  *
  * Schedules tasks for multiple types of clusters by acting through a SchedulerBackend.
@@ -61,8 +68,8 @@ import org.apache.spark.util.{AccumulatorV2, SystemClock, ThreadUtils, Utils}
  */
 private[spark] class TaskSchedulerImpl(
     val sc: SparkContext,
-    val maxTaskFailures: Int,
-    isLocal: Boolean = false)
+    val maxTaskFailures: Int, // 任务失败的最大次数。
+    isLocal: Boolean = false) // 是否是Local部署模式
   extends TaskScheduler with Logging {
 
   import TaskSchedulerImpl._
@@ -77,38 +84,68 @@ private[spark] class TaskSchedulerImpl(
 
   val conf = sc.conf
 
+  // 任务推断执行的时间间隔。可以通过spark. speculation.interval属性进行配置，默认为100ms。
   // How often to check for speculative tasks
   val SPECULATION_INTERVAL_MS = conf.getTimeAsMs("spark.speculation.interval", "100ms")
 
   // Duplicate copies of a task will only be launched if the original copy has been running for
   // at least this amount of time. This is to avoid the overhead of launching speculative copies
   // of tasks that are very short.
+  /**
+   * 用于保证原始任务至少需要运行的时间。原始任务只有超过此时间限制，才允许启动副本任务。
+   * 这可以避免原始任务执行太短的时间就被推断执行副本任务。MIN_TIME_TO_SPECULATION的大小固定为100。
+   */
   val MIN_TIME_TO_SPECULATION = 100
 
+  /**
+   * 对任务调度进行推断执行的ScheduledThreadPoolExecutor。由speculationScheduler创建的线程以task-scheduler-speculation为前缀。
+   */
   private val speculationScheduler =
     ThreadUtils.newDaemonSingleThreadScheduledExecutor("task-scheduler-speculation")
 
+  /**
+   * 判断TaskSet饥饿的阈值。可通过spark.starvation. timeout属性配置，默认为15s
+   */
   // Threshold above which we warn user initial TaskSet may be starved
   val STARVATION_TIMEOUT_MS = conf.getTimeAsMs("spark.starvation.timeout", "15s")
 
+  /**
+   * 每个Task需要分配的CPU核数。可通过spark.task.cpus属性配置，默认为1。
+   */
   // CPUs to request per task
   val CPUS_PER_TASK = conf.getInt("spark.task.cpus", 1)
 
   // TaskSetManagers are not thread safe, so any access to one should be synchronized
   // on this class.
+  /**
+   * 数据类型为HashMap[Int, HashMap[Int,TaskSetManager]]，是用于StageId、Attempt、TaskSetManager的二级缓存。
+   */
   private val taskSetsByStageIdAndAttempt = new HashMap[Int, HashMap[Int, TaskSetManager]]
 
   // Protected by `this`
+  /**
+   * Task与所属TaskSetManager的映射关系。
+   */
   private[scheduler] val taskIdToTaskSetManager = new ConcurrentHashMap[Long, TaskSetManager]
+  /**
+   * Task与执行此Task的Executor之间的映射关系。
+   */
   val taskIdToExecutorId = new HashMap[Long, String]
 
+  // 标记TaskSchedulerImpl是否已经接收到Task。
   @volatile private var hasReceivedTask = false
+  // 标记TaskSchedulerImpl接收的Task是否已经有运行过的。
   @volatile private var hasLaunchedTask = false
+  // 处理饥饿的定时器
   private val starvationTimer = new Timer(true)
 
   // Incrementing task IDs
+  // 用于生成新提交Task的标识
   val nextTaskId = new AtomicLong(0)
 
+  /**
+   * 类型为HashMap[String,HashSet[Long]]，用于缓存Executor与运行在此Executor上的任务之间的映射关系，由此看出一个Executor上可以运行多个Task。
+   */
   // IDs of the tasks running on each executor
   private val executorIdToRunningTaskIds = new HashMap[String, HashSet[Long]]
 
@@ -116,12 +153,20 @@ private[spark] class TaskSchedulerImpl(
     executorIdToRunningTaskIds.toMap.mapValues(_.size)
   }
 
+  /**
+   * 类型为HashMap[String, HashSet[String]]，用于缓存机器的Host与运行在此机器上的Executor之间的映射关系，由此可以看出机器与Executor之间是一对多的关系。
+   */
   // The set of executors we have on each host; this is used to compute hostsAlive, which
   // in turn is used to decide when we can attain data locality on a given host
   protected val hostToExecutors = new HashMap[String, HashSet[String]]
-
+  /**
+   * 类型为HashMap[String, HashSet[String]]，用于缓存机器所在的机架与机架上机器的Host之间的映射关系，由此可以看出机架与机器之间是一对多的关系。
+   */
   protected val hostsByRack = new HashMap[String, HashSet[String]]
 
+  /**
+   * Executor与Executor运行所在机器的Host之间的映射关系。
+   */
   protected val executorIdToHost = new HashMap[String, String]
 
   private val abortTimer = new Timer(true)
@@ -131,14 +176,16 @@ private[spark] class TaskSchedulerImpl(
 
   // Listener object to pass upcalls into
   var dagScheduler: DAGScheduler = null
-
+  // 即调度后端接口SchedulerBackend。
   var backend: SchedulerBackend = null
-
+  // 即SparkEnv的子组件MapOutputTrackerMaster。
   val mapOutputTracker = SparkEnv.get.mapOutputTracker.asInstanceOf[MapOutputTrackerMaster]
-
+  // 调度池构建器，即SchedulableBuilder。
   private var schedulableBuilder: SchedulableBuilder = null
   // default scheduler is FIFO
+  // 调度模式配置。可以通过spark.scheduler.mode属性配置，默认为FIFO。
   private val schedulingModeConf = conf.get(SCHEDULER_MODE_PROPERTY, SchedulingMode.FIFO.toString)
+  // 调度模式。此属性依据schedulingModeConf获取枚举类型SchedulingMode的具体值。SchedulingMode共有FAIR、FIFO、NONE三种枚举值。
   val schedulingMode: SchedulingMode =
     try {
       SchedulingMode.withName(schedulingModeConf.toUpperCase(Locale.ROOT))
@@ -147,8 +194,13 @@ private[spark] class TaskSchedulerImpl(
         throw new SparkException(s"Unrecognized $SCHEDULER_MODE_PROPERTY: $schedulingModeConf")
     }
 
+  // 根调度池，类型为Pool。
   val rootPool: Pool = new Pool("", schedulingMode, 0, 0)
 
+  /**
+   * 类型为TaskResultGetter，它的作用是通过线程池（此线程池由Executors.newFixedThreadPool创建，大小默认为4，
+   * 生成的线程名以task-result-getter开头），对Slave发送的Task的执行结果进行处理。
+   */
   // This is a var so that we can reset it for testing purposes.
   private[spark] var taskResultGetter = new TaskResultGetter(sc.env, this)
 
@@ -172,7 +224,7 @@ private[spark] class TaskSchedulerImpl(
   def initialize(backend: SchedulerBackend) {
     this.backend = backend
     schedulableBuilder = {
-      schedulingMode match {
+      schedulingMode match { // 根据调度模式，创建相应的调度池构建器
         case SchedulingMode.FIFO =>
           new FIFOSchedulableBuilder(rootPool)
         case SchedulingMode.FAIR =>
@@ -182,6 +234,7 @@ private[spark] class TaskSchedulerImpl(
           s"$schedulingMode")
       }
     }
+    // 构建调度池
     schedulableBuilder.buildPools()
   }
 
@@ -191,7 +244,8 @@ private[spark] class TaskSchedulerImpl(
     // 1.启动task scheduler backend
     backend.start()
 
-    // 2. 设定 speculationScheduler 定时任务
+    // 2. 当应用不是在Local模式下，并且设置了推断执行（即spark.speculation属性为true），
+    // 那么设置一个执行间隔为SPECULATION_INTERVAL_MS（默认为100ms）的检查可推断任务的定时器
     if (!isLocal && conf.getBoolean("spark.speculation", false)) {
       logInfo("Starting speculative execution thread")
       speculationScheduler.scheduleWithFixedDelay(new Runnable {

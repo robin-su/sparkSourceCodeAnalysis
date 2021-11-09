@@ -126,13 +126,13 @@
             </parameter>
         </parameters>
     </check>
-    <check level="warning" class="org.scalastyle.scalariform.NumberOfMethodsInTypeChecker" enabled="true">
+    <!--<check level="warning" class="org.scalastyle.scalariform.NumberOfMethodsInTypeChecker" enabled="true">
         <parameters>
             <parameter name="maxMethods">
                 <![CDATA[ 30 ]]>
             </parameter>
         </parameters>
-    </check>
+    </check>-->
     <check level="warning" class="org.scalastyle.scalariform.PublicMethodsHaveTypeChecker" enabled="true"/>
     <check level="warning" class="org.scalastyle.file.NewLineAtEofChecker" enabled="true"/>
     <check level="warning" class="org.scalastyle.file.NoNewLineAtEofChecker" enabled="false"/>
