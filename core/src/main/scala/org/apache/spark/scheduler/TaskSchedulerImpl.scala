@@ -260,15 +260,32 @@ private[spark] class TaskSchedulerImpl(
     waitBackendReady()
   }
 
+  /**
+   * 如果当前应用程序不是Local模式并且TaskSchedulerImpl还没有接收到Task，那么设置一个定时器按照
+   * STARVATION_TIMEOUT_MS指定的时间间隔检查TaskScheduler Impl的饥饿状况，
+   * 当TaskSchedulerImpl已经运行Task后，取消此定时器。
+   * @param taskSet
+   */
   override def submitTasks(taskSet: TaskSet) {
+    // 获取taskSet中所有的task
     val tasks = taskSet.tasks
     logInfo("Adding task set " + taskSet.id + " with " + tasks.length + " tasks")
     this.synchronized {
+      // 创建TaskSetManager
       val manager = createTaskSetManager(taskSet, maxTaskFailures)
+      // 获取stageId
       val stage = taskSet.stageId
+      // 获取stageTaskSets的，用于缓存stage，taskId,taskSetManager的二级缓存
       val stageTaskSets =
         taskSetsByStageIdAndAttempt.getOrElseUpdate(stage, new HashMap[Int, TaskSetManager])
 
+      /**
+       * 将此阶段的所有现有TaskSetManager标记为zombie，因为我们将添加一个新的。这是处理紧急情况所必需的。
+       * 假设一个阶段有10个分区，有2个TaskSetManager:TSM1（僵尸）和TSM2（活动）。TSM1对分区10有一个正在运行的任务，
+       * 它完成了。TSM2完成了分区1-9的任务，并认为他仍然处于活动状态，因为分区10尚未完成。但是，DAGScheduler获取所有
+       * 10个分区的任务完成事件，并认为该阶段已完成。如果它是一个洗牌阶段，并且不知何故它缺少映射输出，那么DAGScheduler
+       * 将重新提交它并为它创建一个TSM3。由于一个阶段不能有多个活动任务集管理器，我们必须将TSM2标记为僵尸（实际上是僵尸）。
+       */
       // Mark all the existing TaskSetManagers of this stage as zombie, as we are adding a new one.
       // This is necessary to handle a corner case. Let's say a stage has 10 partitions and has 2
       // TaskSetManagers: TSM1(zombie) and TSM2(active). TSM1 has a running task for partition 10
@@ -287,11 +304,14 @@ private[spark] class TaskSchedulerImpl(
       if (!isLocal && !hasReceivedTask) {
         starvationTimer.scheduleAtFixedRate(new TimerTask() {
           override def run() {
+            // 若TaskSchedulerImpl接收的Task任务还没运行过，则告警：
+            // 初始job还没有接受任何资源，检查你的cluster UI确保worker已经被注册并且保证其有足够的资源
             if (!hasLaunchedTask) {
               logWarning("Initial job has not accepted any resources; " +
                 "check your cluster UI to ensure that workers are registered " +
                 "and have sufficient resources")
             } else {
+              // 若TaskSchedulerImpl接收的Task任务都已经完成，则取消任务
               this.cancel()
             }
           }

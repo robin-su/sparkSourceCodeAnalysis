@@ -1,3 +1,4 @@
+<!--
 <scalastyle commentFilter="enabled">
     <name>Scalastyle standard configuration</name>
     <check level="warning" class="org.scalastyle.file.FileTabChecker" enabled="true"/>
@@ -126,13 +127,13 @@
             </parameter>
         </parameters>
     </check>
-    <!--<check level="warning" class="org.scalastyle.scalariform.NumberOfMethodsInTypeChecker" enabled="true">
+    &lt;!&ndash;<check level="warning" class="org.scalastyle.scalariform.NumberOfMethodsInTypeChecker" enabled="true">
         <parameters>
             <parameter name="maxMethods">
                 <![CDATA[ 30 ]]>
             </parameter>
         </parameters>
-    </check>-->
+    </check>&ndash;&gt;
     <check level="warning" class="org.scalastyle.scalariform.PublicMethodsHaveTypeChecker" enabled="true"/>
     <check level="warning" class="org.scalastyle.file.NewLineAtEofChecker" enabled="true"/>
     <check level="warning" class="org.scalastyle.file.NoNewLineAtEofChecker" enabled="false"/>
@@ -169,4 +170,4 @@
         </parameters>
     </check>
     <check level="warning" class="org.scalastyle.scalariform.ImportGroupingChecker" enabled="true"/>
-</scalastyle>
+</scalastyle>-->
