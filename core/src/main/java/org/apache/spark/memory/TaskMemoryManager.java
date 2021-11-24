@@ -37,6 +37,8 @@ import org.apache.spark.util.Utils;
 
 /**
  * TaskMemoryManager管理由各个任务分配的内存。任务与TaskMemoryManager交互，永远不会直接与JVM范围的MemoryManager交互。
+ * 任务内存管理器（TaskMemoryManager）用于管理单个任务尝试的内存分配与释放。TaskMemoryManager实际上依赖于MemoryManager提供的内存管理能力，
+ * 多个TaskMemoryManager将共享MemoryManager所管理的内存
  *
  * Manages the memory allocated by an individual task.
  * <p>
@@ -62,17 +64,28 @@ public class TaskMemoryManager {
 
   private static final Logger logger = LoggerFactory.getLogger(TaskMemoryManager.class);
 
-  /** The number of bits used to address the page table. */
+  /**
+   * 用于寻址Page表的位数。静态常量PAGE_NUMBER_BITS的值为13。在64位的长整型中将使用高位的13位存储页号。
+   * The number of bits used to address the page table.
+   */
   private static final int PAGE_NUMBER_BITS = 13;
 
-  /** The number of bits used to encode offsets in data pages. */
+  /**
+   * 用于保存编码后的偏移量的位数。静态常量OFFSET_BITS的值为51。在64位的长整型中将使用低位的51位存储偏移量。
+   * The number of bits used to encode offsets in data pages.
+   */
   @VisibleForTesting
   static final int OFFSET_BITS = 64 - PAGE_NUMBER_BITS;  // 51
 
+  /**
+   * Page表中的Page数量。静态常量PAGE_TABLE_SIZE的值为8192，实际是将1向左位移13（即PAGE_NUMBER_BITS）位所得的值。
+   */
   /** The number of entries in the page table. */
   private static final int PAGE_TABLE_SIZE = 1 << PAGE_NUMBER_BITS;
 
   /**
+   * 最大的Page大小。静态常量MAXIMUM_PAGE_SIZE_BYTES的值为17179 869176，即（2^32-1）× 8。
+   *
    * Maximum supported data page size (in bytes). In principle, the maximum addressable page size is
    * (1L &lt;&lt; OFFSET_BITS) bytes, which is 2+ petabytes. However, the on-heap allocator's
    * maximum page size is limited by the maximum amount of data that can be stored in a long[]
@@ -81,10 +94,15 @@ public class TaskMemoryManager {
    */
   public static final long MAXIMUM_PAGE_SIZE_BYTES = ((1L << 31) - 1) * 8L;
 
+  /**
+   * 长整型的低51位的位掩码。静态常量MASK_ LONG_LOWER_51_BITS的值为2251 799813 685247，即十六进制0x7FFFFF-FFFFFFFL。
+   */
   /** Bit mask for the lower 51 bits of a long. */
   private static final long MASK_LONG_LOWER_51_BITS = 0x7FFFFFFFFFFFFL;
 
   /**
+   * pageTable实际为Page（即MemoryBlock）的数组，数组长度为PAGE_TABLE_SIZE。
+   *
    * Similar to an operating system's page table, this array maps page numbers into base object
    * pointers, allowing us to translate between the hashtable's internal 64-bit address
    * representation and the baseObject+offset representation which we use to support both in- and
@@ -95,12 +113,16 @@ public class TaskMemoryManager {
   private final MemoryBlock[] pageTable = new MemoryBlock[PAGE_TABLE_SIZE];
 
   /**
+   * 用于跟踪空闲Page的BitSet。
+   *
    * Bitmap for tracking free pages.
    */
   private final BitSet allocatedPages = new BitSet(PAGE_TABLE_SIZE);
 
   private final MemoryManager memoryManager;
-
+  /**
+   * TaskMemoryManager所管理任务尝试的身份标识。
+   */
   private final long taskAttemptId;
 
   /**
@@ -132,6 +154,9 @@ public class TaskMemoryManager {
   }
 
   /**
+   * acquireExecutionMemory方法用于为内存消费者获得指定大小（单位为字节）的内存。
+   * 当Task没有足够的内存时，将调用MemoryConsumer的spill方法释放内存。
+   *
    * Acquire N bytes of memory for a consumer. If there is no enough memory, it will call
    * spill() of consumers to release more memory.
    *
@@ -146,8 +171,13 @@ public class TaskMemoryManager {
     // off-heap memory. This is subject to change, though, so it may be risky to make this
     // optimization now in case we forget to undo it late when making changes.
     synchronized (this) {
+      // 调用MemoryManager的acquireExecutionMemory方法尝试为当前任务按指定的存储模式获取指定大小的内存。
       long got = memoryManager.acquireExecutionMemory(required, taskAttemptId, mode);
 
+      /**
+       * 如果逻辑上已经获得的内存未达到期望的内存大小，那么遍历consumers中与指定内存模式相同且已经使用了内存的MemoryConsumer（不包括当前申请内存的Memory Consumer），
+       * 对每个MemoryConsumer执行如下操作。
+       */
       // Try to release memory from other consumers first, then we can reduce the frequency of
       // spilling, avoid to have too many spilled files.
       if (got < required) {
@@ -229,6 +259,8 @@ public class TaskMemoryManager {
   }
 
   /**
+   * 用于为内存消费者释放指定大小（单位为字节）的内存。
+   *
    * Release N bytes of execution memory for a MemoryConsumer.
    */
   public void releaseExecutionMemory(long size, MemoryConsumer consumer) {
@@ -269,6 +301,8 @@ public class TaskMemoryManager {
   }
 
   /**
+   * 用于获得Page的大小（单位为字节）。
+   *
    * Allocate a block of memory that will be tracked in the MemoryManager's page table; this is
    * intended for allocating large blocks of Tungsten memory that will be shared between operators.
    *
@@ -322,6 +356,8 @@ public class TaskMemoryManager {
   }
 
   /**
+   * 用于释放给MemoryConsumer分配的MemoryBlock。
+   *
    * Free a block of memory allocated via {@link TaskMemoryManager#allocatePage}.
    */
   public void freePage(MemoryBlock page, MemoryConsumer consumer) {
@@ -349,6 +385,8 @@ public class TaskMemoryManager {
   }
 
   /**
+   * 用于根据给定的Page（即MemoryBlock）和Page中偏移量的地址，返回页号和相对于内存块起始地址的偏移量（64位长整型）。
+   *
    * Given a memory page and offset within that page, encode this address into a 64-bit long.
    * This address will remain valid as long as the corresponding page has not been freed.
    *
@@ -374,16 +412,27 @@ public class TaskMemoryManager {
     return (((long) pageNumber) << OFFSET_BITS) | (offsetInPage & MASK_LONG_LOWER_51_BITS);
   }
 
+  /**
+   * 用于将64位的长整型右移51位（只剩下页号），然后转换为整型以获得Page的页号。
+   * @param pagePlusOffsetAddress
+   * @return
+   */
   @VisibleForTesting
   public static int decodePageNumber(long pagePlusOffsetAddress) {
     return (int) (pagePlusOffsetAddress >>> OFFSET_BITS);
   }
 
+  /**
+   * 用于将64位的长整型右移51位，然后转换为整型以获得Page的页号。
+   * @param pagePlusOffsetAddress
+   * @return
+   */
   private static long decodeOffset(long pagePlusOffsetAddress) {
     return (pagePlusOffsetAddress & MASK_LONG_LOWER_51_BITS);
   }
 
   /**
+   * 用于通过64位的长整型，获取Page在内存中的对象。
    * Get the page associated with an address encoded by
    * {@link TaskMemoryManager#encodePageNumberAndOffset(MemoryBlock, long)}
    */

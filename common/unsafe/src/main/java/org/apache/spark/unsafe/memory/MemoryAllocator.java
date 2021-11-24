@@ -31,13 +31,22 @@ public interface MemoryAllocator {
   byte MEMORY_DEBUG_FILL_FREED_VALUE = (byte)0x5a;
 
   /**
+   * 分配指定大小的连续内存块。按照这种方式分配的内存不能保证被清零，如果需要，可以在MemoryBlock上调用fill(0)。
+   *
    * Allocates a contiguous block of memory. Note that the allocated memory is not guaranteed
    * to be zeroed out (call `fill(0)` on the result if this is necessary).
    */
   MemoryBlock allocate(long size) throws OutOfMemoryError;
 
+  /**
+   * 释放连续的内存块。
+   * @param memory
+   */
   void free(MemoryBlock memory);
 
+  /**
+   * UnsafeMemoryAllocator和HeapMemoryAllocator是在不同内存模式下，MemoryAllocator的实现类
+   */
   MemoryAllocator UNSAFE = new UnsafeMemoryAllocator();
 
   MemoryAllocator HEAP = new HeapMemoryAllocator();

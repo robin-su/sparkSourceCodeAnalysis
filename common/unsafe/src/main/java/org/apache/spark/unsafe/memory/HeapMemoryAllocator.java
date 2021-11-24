@@ -26,16 +26,24 @@ import java.util.Map;
 import org.apache.spark.unsafe.Platform;
 
 /**
+ * HeapMemoryAllocator是Tungsten在堆内存模式下使用的内存分配器，与onHeapExecution MemoryPool配合使用
+ *
  * A simple {@link MemoryAllocator} that can allocate up to 16GB using a JVM long primitive array.
  */
 public class HeapMemoryAllocator implements MemoryAllocator {
 
+  /**
+   * bufferPoolsBySize是关于MemoryBlock的弱引用的缓冲池，用于Page页（即Memory Block）的分配。
+   */
   @GuardedBy("this")
   private final Map<Long, LinkedList<WeakReference<long[]>>> bufferPoolsBySize = new HashMap<>();
 
   private static final int POOLING_THRESHOLD_BYTES = 1024 * 1024;
 
   /**
+   * 用于判断对于指定大小的MemoryBlock，是否需要采用池化机制（即从缓冲池bufferPoolsBySize中获取MemoryBlock或将MemoryBlock放入bufferPoolsBySize）。
+   * 根据shouldPool方法的实现，当要分配的内存大小大于等于1MB（常量POOLING_THRESHOLD_BYTES的值）时，需要从bufferPoolsBySize中获取Memory Block。
+   *
    * Returns true if allocations of the given size should go through the pooling mechanism and
    * false otherwise.
    */
@@ -44,6 +52,16 @@ public class HeapMemoryAllocator implements MemoryAllocator {
     return size >= POOLING_THRESHOLD_BYTES;
   }
 
+  /**
+   * 用于分配指定大小（size）的MemoryBlock:
+   * 如果指定大小（size）的MemoryBlock需要采用池化机制，则从bufferPoolsBySize的弱引用中获取指定大小的MemoryBlock。
+   * 如果bufferPoolsBySize中没有指定大小的MemoryBlock，则将指定大小的弱引用池从bufferPoolsBySize中移除。
+   *
+   * 如果指定大小（size）的MemoryBlock不需要采用池化机制或者bufferPoolsBySize中没有指定大小的MemoryBlock，则创建MemoryBlock并返回。
+   * @param size
+   * @return
+   * @throws OutOfMemoryError
+   */
   @Override
   public MemoryBlock allocate(long size) throws OutOfMemoryError {
     int numWords = (int) ((size + 7) / 8);
@@ -77,6 +95,10 @@ public class HeapMemoryAllocator implements MemoryAllocator {
     return memory;
   }
 
+  /**
+   * 用于释放MemoryBlock
+   * @param memory
+   */
   @Override
   public void free(MemoryBlock memory) {
     assert (memory.obj != null) :
@@ -88,8 +110,8 @@ public class HeapMemoryAllocator implements MemoryAllocator {
       "TMM-allocated pages must first be freed via TMM.freePage(), not directly in allocator " +
         "free()";
 
-    final long size = memory.size();
-    if (MemoryAllocator.MEMORY_DEBUG_FILL_ENABLED) {
+    final long size = memory.size(); // 获取待释放MemoryBlock的大小。
+    if (MemoryAllocator.MEMORY_DEBUG_FILL_ENABLED) { // 如果MemoryBlock的大小需要采用池化机制，那么将MemoryBlock的弱引用放入bufferPoolsBySize中。
       memory.fill(MemoryAllocator.MEMORY_DEBUG_FILL_FREED_VALUE);
     }
 

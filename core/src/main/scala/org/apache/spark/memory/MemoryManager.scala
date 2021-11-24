@@ -243,6 +243,10 @@ private[spark] abstract class MemoryManager(
   // -- Fields related to Tungsten managed memory -------------------------------------------------
 
   /**
+   * Tungsten的内存模式
+   * 当Tungsten在堆内存模式下，数据存储在JVM堆上，这时Tungsten选择onHeapExecutionMemoryPool作为内存池。当Tungsten在堆外内存模式下，
+   * 数据则会存储在堆外内存（操作系统内存）中，这时Tungsten选择offHeapExecution MemoryPool作为内存池。可以通过spark.memory.offHeap.enabled属性
+   * （默认为false）来配置是否启用Tungsten的堆外内存。
    * Tracks whether Tungsten memory will be allocated on the JVM heap or off-heap using
    * sun.misc.Unsafe.
    */
@@ -259,6 +263,10 @@ private[spark] abstract class MemoryManager(
   }
 
   /**
+   * Tungsten采用的Page的默认大小（单位为字节）。可通过spark. buffer.pageSize属性进行配置。
+   * tungstenMemoryAllocator:Tungsten采用的内存分配器（MemoryAllocator）。如果tungstenMemoryMode为MemoryMode.ON_HEAP，
+   * 那么tungstenMemoryAllocator为堆内存分配器（HeapMemoryAllocator），否则为使用sun.misc.Unsafe的API分配操作系统内存的分配器UnsafeMemoryAllocator。
+   *
    * The default page size, in bytes.
    *
    * If user didn't explicitly set "spark.buffer.pageSize", we figure out the default value

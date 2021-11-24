@@ -23,6 +23,8 @@ import org.apache.spark.unsafe.array.LongArray;
 import org.apache.spark.unsafe.memory.MemoryBlock;
 
 /**
+ * 抽象类MemoryConsumer定义了内存消费者的规范，它通过TaskMemoryManager在执行内存（堆内存或堆外内存）上申请或释放内存。
+ *
  * A memory consumer of {@link TaskMemoryManager} that supports spilling.
  *
  * Note: this only supports allocation / spilling of Tungsten memory.
@@ -30,8 +32,11 @@ import org.apache.spark.unsafe.memory.MemoryBlock;
 public abstract class MemoryConsumer {
 
   protected final TaskMemoryManager taskMemoryManager;
+  // MemoryConsumer要消费的Page的大小。
   private final long pageSize;
+  //即内存模式（MemoryMode）
   private final MemoryMode mode;
+  // 当前消费者已经使用的执行内存的大小
   protected long used;
 
   protected MemoryConsumer(TaskMemoryManager taskMemoryManager, long pageSize, MemoryMode mode) {
@@ -66,6 +71,8 @@ public abstract class MemoryConsumer {
   }
 
   /**
+   * MemoryConsumer中定义了需要子类实现的抽象方法spill，当任务尝试没有足够的内存可用时，TaskMemoryManager将调用此方法把一些数据溢出到磁盘，以释放内存。
+   *
    * Spill some data to disk to release memory, which will be called by TaskMemoryManager
    * when there is not enough memory for the task.
    *
@@ -83,6 +90,7 @@ public abstract class MemoryConsumer {
   public abstract long spill(long size, MemoryConsumer trigger) throws IOException;
 
   /**
+   * 用于分配指定大小的长整型数组
    * Allocates a LongArray of `size`. Note that this method may throw `OutOfMemoryError` if Spark
    * doesn't have enough memory for this allocation, or throw `TooLargePageException` if this
    * `LongArray` is too large to fit in a single page. The caller side should take care of these
@@ -92,8 +100,11 @@ public abstract class MemoryConsumer {
    * @throws TooLargePageException
    */
   public LongArray allocateArray(long size) {
-    long required = size * 8L;
+    //计算所需的Page大小（即required）。由于长整型占用8个字节，所以需要乘以8。
+    long required = size * 8L; // 计算所需的page大小
     MemoryBlock page = taskMemoryManager.allocatePage(required, this);
+    //如果分配得到的MemoryBlock的大小小于所需的大小required，则调用TaskMemory Manager的freePage方法。
+    //
     if (page == null || page.size() < required) {
       throwOom(page, required);
     }
