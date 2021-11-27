@@ -37,7 +37,7 @@ import org.apache.spark.annotation.DeveloperApi
  * TODO: Cache the hash values of each key? java.util.HashMap does that.
  */
 @DeveloperApi
-class AppendOnlyMap[K, V](initialCapacity: Int = 64)
+class AppendOnlyMap[K, V](initialCapacity: Int = 64) // initialCapacity: 初始容量值。如果未指定，默认为64。
   extends Iterable[(K, V)] with Serializable {
 
   import AppendOnlyMap._
@@ -49,6 +49,7 @@ class AppendOnlyMap[K, V](initialCapacity: Int = 64)
   private val LOAD_FACTOR = 0.7
 
   private var capacity = nextPowerOf2(initialCapacity)
+  // 计算数据存放位置的掩码。计算mask的表达式为capacity -1。
   private var mask = capacity - 1
   private var curSize = 0
   private var growThreshold = (LOAD_FACTOR * capacity).toInt

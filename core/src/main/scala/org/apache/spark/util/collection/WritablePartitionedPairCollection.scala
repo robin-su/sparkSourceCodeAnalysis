@@ -30,11 +30,15 @@ import org.apache.spark.storage.DiskBlockObjectWriter
  */
 private[spark] trait WritablePartitionedPairCollection[K, V] {
   /**
+   * 将键值对与相关联的分区插入到集合中。
+   *
    * Insert a key-value pair with a partition into the collection
    */
   def insert(partition: Int, key: K, value: V): Unit
 
   /**
+   * 根据给定的对key进行比较的比较器，返回对集合中的数据按照分区ID的顺序进行迭代的迭代器
+   *
    * Iterate through the data in order of partition ID and then the given comparator. This may
    * destroy the underlying collection.
    */
@@ -42,6 +46,8 @@ private[spark] trait WritablePartitionedPairCollection[K, V] {
     : Iterator[((Int, K), V)]
 
   /**
+   * 调用由子类实现的partitionedDestructiveSortedIterator方法，获得对集合中的数据按照分区ID的顺序进行迭代的迭代器。
+   *
    * Iterate through the data and write out the elements instead of returning them. Records are
    * returned in order of their partition ID and then the given comparator.
    * This may destroy the underlying collection.

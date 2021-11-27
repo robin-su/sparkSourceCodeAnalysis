@@ -75,6 +75,8 @@ private[spark] class SortShuffleManager(conf: SparkConf) extends ShuffleManager 
   }
 
   /**
+   * numMapsForShuffle记录了shuffle的唯一标识和Map数量的关系，在获取writer时候添加，在注销shuffle时候删除。
+   *
    * A mapping from shuffle ids to the number of mappers producing output for those shuffles.
    */
   private[this] val numMapsForShuffle = new ConcurrentHashMap[Int, Int]()
@@ -88,25 +90,37 @@ private[spark] class SortShuffleManager(conf: SparkConf) extends ShuffleManager 
       shuffleId: Int,
       numMaps: Int,
       dependency: ShuffleDependency[K, V, C]): ShuffleHandle = {
+    /**
+     * 当map个数比较少，小于spark.shuffle.sort.bypassMergeThreshold而且不需要做map-side的聚合操作时候，可以使用BypassMergeSortShuffleHandle，
+     * 这种类似于早期的HashShuffle，每个reduce一个文件，直接写入到文件中，最后合并为一个文件，不需要序列化和反序列化开销，加速程序运行，但是会同时打开多个文件；
+       当shuffle可以使用序列化shuffle时候，使用SerializedShuffleHandle，数据写入时候会进行序列化，缓存，直接在序列化的二进制数据上排序而不是在java 对象上，
+       这样可以减少内存的消耗和GC的开销，另外将键值和指针结合到一起进行排序，可以更好的利用缓存
+     */
+    // 判断使用哪种ShuffleHandle
     if (SortShuffleWriter.shouldBypassMergeSort(conf, dependency)) {
       // If there are fewer than spark.shuffle.sort.bypassMergeThreshold partitions and we don't
       // need map-side aggregation, then write numPartitions files directly and just concatenate
       // them at the end. This avoids doing serialization and deserialization twice to merge
       // together the spilled files, which would happen with the normal code path. The downside is
       // having multiple files open at a time and thus more memory allocated to buffers.
+      // 需要绕开合并及排序，则创建BypassMergeSortShuffleHandle
       new BypassMergeSortShuffleHandle[K, V](
         shuffleId, numMaps, dependency.asInstanceOf[ShuffleDependency[K, V, V]])
     } else if (SortShuffleManager.canUseSerializedShuffle(dependency)) {
       // Otherwise, try to buffer map outputs in a serialized form, since this is more efficient:
       new SerializedShuffleHandle[K, V](
+        // 如果可以使用序列化的Shuffle，则创建SerializedShuffleHandle
         shuffleId, numMaps, dependency.asInstanceOf[ShuffleDependency[K, V, V]])
     } else {
+      // 其他情况，将创建BaseShuffleHandle
       // Otherwise, buffer map outputs in a deserialized form:
       new BaseShuffleHandle(shuffleId, numMaps, dependency)
     }
   }
 
   /**
+   * 获取reader，当Shuffle Reduce任务执行时候，要获取数据，这个是通过BlockStoreShuffleReader来实现read方法获取迭代器数据的。
+   *
    * Get a reader for a range of reduce partitions (startPartition to endPartition-1, inclusive).
    * Called on executors by reduce tasks.
    */
@@ -119,7 +133,10 @@ private[spark] class SortShuffleManager(conf: SparkConf) extends ShuffleManager 
       handle.asInstanceOf[BaseShuffleHandle[K, _, C]], startPartition, endPartition, context)
   }
 
-  /** Get a writer for a given partition. Called on executors by map tasks. */
+  /** 用于根据ShuffleHandle获取ShuffleWriter。
+   *
+   * Get a writer for a given partition. Called on executors by map tasks.
+   */
   override def getWriter[K, V](
       handle: ShuffleHandle,
       mapId: Int,
@@ -127,6 +144,7 @@ private[spark] class SortShuffleManager(conf: SparkConf) extends ShuffleManager 
     numMapsForShuffle.putIfAbsent(
       handle.shuffleId, handle.asInstanceOf[BaseShuffleHandle[_, _, _]].numMaps)
     val env = SparkEnv.get
+    // 根据ShuffleHandle的具体类型，创建不同的ShuffleWriter
     handle match {
       case unsafeShuffleHandle: SerializedShuffleHandle[K @unchecked, V @unchecked] =>
         new UnsafeShuffleWriter(
@@ -150,7 +168,10 @@ private[spark] class SortShuffleManager(conf: SparkConf) extends ShuffleManager 
     }
   }
 
-  /** Remove a shuffle's metadata from the ShuffleManager. */
+  /**
+   * 注销shuffle，注销后需要删除shuffleId的记录，并清理产生的数据文件和索引文件。
+   * Remove a shuffle's metadata from the ShuffleManager.
+   */
   override def unregisterShuffle(shuffleId: Int): Boolean = {
     Option(numMapsForShuffle.remove(shuffleId)).foreach { numMaps =>
       (0 until numMaps).foreach { mapId =>
@@ -178,6 +199,12 @@ private[spark] object SortShuffleManager extends Logging {
     PackedRecordPointer.MAXIMUM_PARTITION_ID + 1
 
   /**
+   * 是否可以序列化的判断，使用序列化的Shuffle，会创建SerializedShuffleHandle，这种模式下需要先对数据进行序列化，缓存，
+   * 直接在序列化的二进制数据上排序而不是在java 对象上，这样可以减少内存的消耗和GC的开销，另外将键值和指针结合到一起进行排序，
+   * 可以更好的利用缓存<缓存感知计算技术>
+
+     序列化器支持对已经序列化的对象重定位<例如KryoSerializer>，重新排序序列化流输出中的序列化对象的字节等同于在序列化它们之前重新排序这些元素，这是为了直接对序列化的数据进行排序；
+
    * Helper method for determining whether a shuffle should use an optimized serialized shuffle
    * path or whether it should fall back to the original path that operates on deserialized objects.
    */

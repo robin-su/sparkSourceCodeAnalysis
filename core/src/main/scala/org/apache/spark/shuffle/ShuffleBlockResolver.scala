@@ -22,8 +22,8 @@ import org.apache.spark.storage.ShuffleBlockId
 
 private[spark]
 /**
- * 该接口的实现者可以知道如何为逻辑shuflle block的标识符检索数据。该接口的实现者可能使用文件或者文件片段
- * 来封装shuflle的数据。当shuffle的数据被检索时，该接口被BlockStore类用于抽象不同的shuffle实现
+ *  主要用于shuffle blocks从逻辑block到物理文件之间的映射关系。实现了获取Shuffle数据文件、获取Shuffle索引文件、
+ *  删除指定的Shuffle数据文件和索引文件、生成Shuffle索引文件、获取Shuffle块的数据等
  *
  * Implementers of this trait understand how to retrieve block data for a logical shuffle block
  * identifier (i.e. map, reduce, and shuffle). Implementations may use files or file segments to
