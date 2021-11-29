@@ -87,28 +87,36 @@ import org.apache.spark.storage.{BlockId, DiskBlockObjectWriter}
  *  - Users are expected to call stop() at the end to delete all the intermediate files.
  */
 private[spark] class ExternalSorter[K, V, C](
-    context: TaskContext,
-    aggregator: Option[Aggregator[K, V, C]] = None,
-    partitioner: Option[Partitioner] = None,
-    ordering: Option[Ordering[K]] = None,
-    serializer: Serializer = SparkEnv.get.serializer)
+    context: TaskContext, // 由于TaskContext只有TaskContextImpl这一个实现类，因此我们也可以认为是TaskContextImpl。
+    aggregator: Option[Aggregator[K, V, C]] = None, // 对map任务的输出数据进行聚合的聚合器，类型为Aggregator[K, V, C]。
+    partitioner: Option[Partitioner] = None, // 对map任务的输出数据按照key计算分区的分区计算器Partitioner。
+    ordering: Option[Ordering[K]] = None, // 对map任务的输出数据按照key进行排序的scala.math.Ordering的实现类。
+    serializer: Serializer = SparkEnv.get.serializer) // 即SparkEnv的子组件serializer。
   extends Spillable[WritablePartitionedPairCollection[K, C]](context.taskMemoryManager())
   with Logging {
 
   private val conf = SparkEnv.get.conf
-
+  // 分区数量。实际通过调用partitioner的numPartitions方法
   private val numPartitions = partitioner.map(_.numPartitions).getOrElse(1)
+  //是否有分区。当numPartitions大于1时为true。
   private val shouldPartition = numPartitions > 1
   private def getPartition(key: K): Int = {
     if (shouldPartition) partitioner.get.getPartition(key) else 0
   }
 
+  // 即SparkEnv的子组件BlockManager。
   private val blockManager = SparkEnv.get.blockManager
+  // 即BlockManager的子组件DiskBlockManager。
   private val diskBlockManager = blockManager.diskBlockManager
+  // 即SparkEnv的子组件SerializerManager。
   private val serializerManager = SparkEnv.get.serializerManager
+  // serializer的实例。
   private val serInstance = serializer.newInstance()
 
   // Use getSizeAsKb (not bytes) to maintain backwards compatibility if no units are provided
+  /**
+   * 用于设置DiskBlockObjectWriter内部的文件缓冲大小。可通过spark. shuffle.file.buffer属性进行配置，默认是32KB。
+   */
   private val fileBufferSize = conf.getSizeAsKb("spark.shuffle.file.buffer", "32k").toInt * 1024
 
   // Size of object batches when reading/writing from serializers.
@@ -123,19 +131,45 @@ private[spark] class ExternalSorter[K, V, C](
   // Data structures to store in-memory objects before we spill. Depending on whether we have an
   // Aggregator set, we either put objects into an AppendOnlyMap where we combine them, or we
   // store them in an array buffer.
+  /**
+   * 类型为PartitionedAppendOnlyMap[K, C]。当设置了聚合器（Aggregator）时，map端将中间结果溢出到磁盘前，
+   * 先利用此数据结构在内存中对中间结果进行聚合处理。
+   */
   @volatile private var map = new PartitionedAppendOnlyMap[K, C]
+  /**
+   * 类型为PartitionedPairBuffer[K, C]。当没有设置聚合器（Aggregator）时，map端将中间结果溢出到磁盘前，
+   * 先利用此数据结构将中间结果存储在内存中。
+   */
   @volatile private var buffer = new PartitionedPairBuffer[K, C]
 
   // Total spilling statistics
   private var _diskBytesSpilled = 0L
+
+  /**
+   * 用于对溢出到磁盘的字节数进行统计（单位为字节）
+   *
+   * @return
+   */
   def diskBytesSpilled: Long = _diskBytesSpilled
 
   // Peak size of the in-memory data structure observed so far, in bytes
+  /*
+  内存中数据结构大小的峰值（单位为字节）
+   */
   private var _peakMemoryUsedBytes: Long = 0L
   def peakMemoryUsedBytes: Long = _peakMemoryUsedBytes
 
+  // 是否对Shuffle数据进行排序
   @volatile private var isShuffleSort: Boolean = true
+  /**
+   * 缓存强制溢出的文件数组。forceSpillFiles的类型为ArrayBuffer [SpilledFile]。
+   * SpilledFile保存了溢出文件的信息，包括file（文件）、blockId（BlockId）、serializerBatchSizes、
+   * elementsPerPartition（每个分区的元素数量）。
+   */
   private val forceSpillFiles = new ArrayBuffer[SpilledFile]
+  /**
+   * 类型为SpillableIterator，用于包装内存中数据的迭代器和溢出文件，并表现为一个新的迭代器。
+   */
   @volatile private var readingIterator: SpillableIterator = null
 
   // A comparator for keys K that orders them within a partition to allow aggregation or sorting.
@@ -143,6 +177,12 @@ private[spark] class ExternalSorter[K, V, C](
   // user. (A partial ordering means that equal keys have comparator.compare(k, k) = 0, but some
   // non-equal keys also have this, so we need to do a later pass to find truly equal keys).
   // Note that we ignore this if no aggregator and no ordering are given.
+  /**
+   * 中间输出的key的比较器。keyComparator的类型为Comparator[K]，用于在分区内对中间结果按照key进行排序，以便于聚合。
+   *
+   * 根据keyComparator的定义，当用户没有指定ordering时，将会创建一个按照Key的哈希值进行比较的默认比较器。因为不同的key值也可能有相同的哈希值，
+   * 因此默认的比较器会工作不正常。此比较器经常作为partitionComparator和partitionKeyComparator所需要的key值比较器。
+   */
   private val keyComparator: Comparator[K] = ordering.getOrElse(new Comparator[K] {
     override def compare(a: K, b: K): Int = {
       val h1 = if (a == null) 0 else a.hashCode()
@@ -168,6 +208,9 @@ private[spark] class ExternalSorter[K, V, C](
     serializerBatchSizes: Array[Long],
     elementsPerPartition: Array[Long])
 
+  /**
+   * 缓存溢出的文件数组。spills的类型为ArrayBuffer[SpilledFile]。numSpills方法用于返回spills的大小，即溢出的文件数量。
+   */
   private val spills = new ArrayBuffer[SpilledFile]
 
   /**
@@ -176,18 +219,38 @@ private[spark] class ExternalSorter[K, V, C](
    */
   private[spark] def numSpills: Int = spills.size
 
+  /**
+   * map任务在执行结束后会将数据写入磁盘，等待reduce任务获取。但在写入磁盘之前，Spark可能会对map任务的输出在内存中进行一些排序和聚合。
+   * ExternalSorter的insertAll方法是这一过程的入口
+   *
+   * @param records
+   */
   def insertAll(records: Iterator[Product2[K, V]]): Unit = {
     // TODO: stop combining if we find that the reduction factor isn't high
     val shouldCombine = aggregator.isDefined
 
-    if (shouldCombine) {
+    if (shouldCombine) { // 如果用户指定了聚合器，那么对数据进行聚合
       // Combine values in-memory first using our AppendOnlyMap
+
+      // 获取聚合器的mergeValue函数（此函数用于将新的Value合并到聚合的结果中）。
       val mergeValue = aggregator.get.mergeValue
+      // 获取聚合器的createCombiner函数（此函数用于创建聚合的初始值）
       val createCombiner = aggregator.get.createCombiner
       var kv: Product2[K, V] = null
+      /**
+       * 定义偏函数update。此函数的作用是当有新的Value时（即hadValue为true），调用mergeValue函数将新的Value合并到之前聚合的结果中，
+       * 否则说明刚刚开始聚合，此时调用createCombiner函数以Value作为聚合的初始值。
+       */
       val update = (hadValue: Boolean, oldValue: C) => {
         if (hadValue) mergeValue(oldValue, kv._2) else createCombiner(kv._2)
       }
+
+      /**
+       *  迭代输入的记录，首先调用父类Spillable的addElementsRead方法增加已经读取的元素数，然后对每个scala.Product2[K, V]的key
+       *  通过调用getPartition方法计算分区索引（ID），并将分区索引与key作为调用AppendOnlyMap的changeValue方法的参数key，
+       *  以偏函数update作为changeValue方法的参数updateFunc，对由分区索引与key组成的对偶进行聚合。最后调用maybeSpillCollection
+       *  方法进行可能的磁盘溢出。
+       */
       while (records.hasNext) {
         addElementsRead()
         kv = records.next()
@@ -212,19 +275,23 @@ private[spark] class ExternalSorter[K, V, C](
    */
   private def maybeSpillCollection(usingMap: Boolean): Unit = {
     var estimatedSize = 0L
-    if (usingMap) {
-      estimatedSize = map.estimateSize()
-      if (maybeSpill(map, estimatedSize)) {
-        map = new PartitionedAppendOnlyMap[K, C]
+    if (usingMap) { //如果使用了PartitionedAppendOnlyMap
+      estimatedSize = map.estimateSize() // 对PartitionedAppendOnlyMap的大小进行评估
+      if (maybeSpill(map, estimatedSize)) { // 将PartitionedAppendOnlyMap溢写到磁盘
+        map = new PartitionedAppendOnlyMap[K, C] // 重新创建PartitionedAppendOnlyMap
       }
-    } else {
-      estimatedSize = buffer.estimateSize()
-      if (maybeSpill(buffer, estimatedSize)) {
-        buffer = new PartitionedPairBuffer[K, C]
+    } else { // 如果使用了PartitionedPairBuffer
+      estimatedSize = buffer.estimateSize() // 对PartitionedPairBuffer的大小进行评估
+      if (maybeSpill(buffer, estimatedSize)) { // 将PartitionedPairBuffer溢写到磁盘
+        buffer = new PartitionedPairBuffer[K, C] // 重新创建PartitionedPairBuffer
       }
     }
 
-    if (estimatedSize > _peakMemoryUsedBytes) {
+    /**
+     * 如果估算的大小超过了ExternalSorter已经使用的内存大小的峰值_peakMemory UsedBytes，
+     * 那么将ExternalSorter的_peakMemoryUsedBytes修改为估算的大小。
+     */
+    if (estimatedSize > _peakMemoryUsedBytes) { //
       _peakMemoryUsedBytes = estimatedSize
     }
   }
@@ -260,6 +327,8 @@ private[spark] class ExternalSorter[K, V, C](
   }
 
   /**
+   * 将内存溢写到磁盘
+   *
    * Spill contents of in-memory iterator to a temporary file on disk.
    */
   private[this] def spillMemoryIteratorToDisk(inMemoryIterator: WritablePartitionedIterator)

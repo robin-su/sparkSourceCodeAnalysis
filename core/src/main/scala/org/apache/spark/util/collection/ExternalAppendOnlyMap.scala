@@ -214,11 +214,14 @@ class ExternalAppendOnlyMap[K, V, C](
    */
   private[this] def spillMemoryIteratorToDisk(inMemoryIterator: Iterator[(K, C)])
       : DiskMapIterator = {
+    //  创建唯一的BlockId和文件
     val (blockId, file) = diskBlockManager.createTempLocalBlock()
     val writer = blockManager.getDiskWriter(blockId, file, ser, fileBufferSize, writeMetrics)
+    // 用于统计已经写入磁盘的键值对数量
     var objectsWritten = 0
 
     // List of batch sizes (bytes) in the order they are written to disk
+    // 创建存储批次大小的数组缓冲batchSizes。
     val batchSizes = new ArrayBuffer[Long]
 
     // Flush the disk writer's contents to disk, and update relevant variables

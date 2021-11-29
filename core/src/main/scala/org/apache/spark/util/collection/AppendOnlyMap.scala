@@ -59,7 +59,11 @@ class AppendOnlyMap[K, V](initialCapacity: Int = 64) // initialCapacity: 初始�
   private var data = new Array[AnyRef](2 * capacity)
 
   // Treat the null key differently so we can use nulls in "data" to represent empty items.
+  /**
+   * haveNullValue表示是否存在null的key
+   */
   private var haveNullValue = false
+  // 支持key为null的情况，使用一个变量nullValue保存对应的值
   private var nullValue: V = null.asInstanceOf[V]
 
   // Triggered by destructiveSortedIterator; the underlying data array may no longer be used
@@ -94,9 +98,9 @@ class AppendOnlyMap[K, V](initialCapacity: Int = 64) // initialCapacity: 初始�
   def update(key: K, value: V): Unit = {
     assert(!destroyed, destructionMessage)
     val k = key.asInstanceOf[AnyRef]
-    if (k.eq(null)) {
-      if (!haveNullValue) {
-        incrementSize()
+    if (k.eq(null)) { // 对应的key是null值更新处理
+      if (!haveNullValue) { // 当前data中还没有null值
+        incrementSize() //
       }
       nullValue = value
       haveNullValue = true
@@ -123,16 +127,24 @@ class AppendOnlyMap[K, V](initialCapacity: Int = 64) // initialCapacity: 初始�
   }
 
   /**
+   * 这里使用'缓存聚合算法'
+   *
+   * updateFunc： 聚合函数。updateFunc接收两个参数，分别是Boolean类型和泛型类型V。
+   * Boolean类型的参数表示key是否已经添加到AppendOnlyMap的data数组中进行过聚合。
+   * V则表示key曾经添加到AppendOnlyMap的data数组进行聚合时生成的聚合值，新一轮的
+   * 聚合将在之前的聚合值上累积。
+   *
    * Set the value for key to updateFunc(hadValue, oldValue), where oldValue will be the old value
    * for key, if any, or null otherwise. Returns the newly updated value.
    */
   def changeValue(key: K, updateFunc: (Boolean, V) => V): V = {
     assert(!destroyed, destructionMessage)
     val k = key.asInstanceOf[AnyRef]
-    if (k.eq(null)) {
-      if (!haveNullValue) {
-        incrementSize()
+    if (k.eq(null)) { // 若key为null
+      if (!haveNullValue) { // 若不存在key为null的元素
+        incrementSize() // 扩充元素
       }
+      // 调用updateFunc函数对nullValue进行聚合。haveNullValue属性作为updateFunc函数的Boolean类型参数。
       nullValue = updateFunc(haveNullValue, nullValue)
       haveNullValue = true
       return nullValue
@@ -200,6 +212,7 @@ class AppendOnlyMap[K, V](initialCapacity: Int = 64) // initialCapacity: 初始�
 
   /** Increase table size by 1, rehashing if necessary */
   private def incrementSize() {
+    // 拓展AppendOnlyMap的容量
     curSize += 1
     if (curSize > growThreshold) {
       growTable()
