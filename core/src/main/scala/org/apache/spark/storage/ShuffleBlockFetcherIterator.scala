@@ -35,6 +35,9 @@ import org.apache.spark.util.Utils
 import org.apache.spark.util.io.ChunkedByteBufferOutputStream
 
 /**
+ * ShuffleBlockFetcherIterator是用于获取多个Block的迭代器。如果Block在本地，那么从本地的BlockManager获取；如果Block在远端，
+ * 那么通过ShuffleClient请求远端节点上的BlockTransferService获取。
+ *
  * An iterator that fetches multiple blocks. For local blocks, it fetches from the local block
  * manager. For remote blocks, it fetches them using the provided BlockTransferService.
  *
@@ -63,11 +66,21 @@ import org.apache.spark.util.io.ChunkedByteBufferOutputStream
 private[spark]
 final class ShuffleBlockFetcherIterator(
     context: TaskContext,
-    shuffleClient: ShuffleClient,
-    blockManager: BlockManager,
-    blocksByAddress: Iterator[(BlockManagerId, Seq[(BlockId, Long)])],
+    shuffleClient: ShuffleClient, //此ShuffleClient将用于从远端节点下载Block。
+    blockManager: BlockManager,  // 本地的BlockManager。
+    blocksByAddress: Iterator[(BlockManagerId, Seq[(BlockId, Long)])], // 将要获取的Block与所在地址的关系，类型为Seq[(BlockManagerId, Seq[(BlockId, Long)])]。
+    // 从此属性可以看出，每个BlockManager中包含一到多个任务需要的Block。
     streamWrapper: (BlockId, InputStream) => InputStream,
+
+    /**
+     * 单次航班（即一批请求）请求的最大字节数。这批请求的字节总数不能超过maxBytesInFlight，而且每个请求的字节数不能超过maxBytesInFlight的1/5。
+     * 可以通过参数spark.reducer.maxMbInFlight来控制大小（默认为48MB）。为什么每个请求的字节数不能超过maxBytesInFlight的1/5？这样做是为了
+     * 提高请求的并发度，保证至少向5个不同的节点发送请求获取数据，最大限度地利用各节点的资源。
+     */
     maxBytesInFlight: Long,
+    /**
+     * 单次航班的最多请求数。此参数可以通过spark.reducer.maxReqsIn Flight属性配置，默认为Integer.MAX_VALUE。
+     */
     maxReqsInFlight: Int,
     maxBlocksInFlightPerAddress: Int,
     maxReqSizeShuffleToMem: Long,
@@ -77,6 +90,8 @@ final class ShuffleBlockFetcherIterator(
   import ShuffleBlockFetcherIterator._
 
   /**
+   * 一共要获取的Block数量。
+   *
    * Total number of blocks to fetch. This should be equal to the total number of blocks
    * in [[blocksByAddress]] because we already filter out zero-sized blocks in [[blocksByAddress]].
    *
@@ -85,6 +100,8 @@ final class ShuffleBlockFetcherIterator(
   private[this] var numBlocksToFetch = 0
 
   /**
+   * 已经处理的Block数量。
+   *
    * The number of blocks processed by the caller. The iterator is exhausted when
    * [[numBlocksProcessed]] == [[numBlocksToFetch]].
    */
@@ -92,25 +109,38 @@ final class ShuffleBlockFetcherIterator(
 
   private[this] val startTime = System.currentTimeMillis
 
+  /**
+   * 缓存了本地BlockManager管理的Block的BlockId。
+   */
   /** Local blocks to fetch, excluding zero-sized blocks. */
   private[this] val localBlocks = scala.collection.mutable.LinkedHashSet[BlockId]()
 
-  /** Remote blocks to fetch, excluding zero-sized blocks. */
+  /**
+   * 缓存了远端BlockManager管理的Block的BlockId
+   *
+   * Remote blocks to fetch, excluding zero-sized blocks.
+   */
   private[this] val remoteBlocks = new HashSet[BlockId]()
 
   /**
+   * 用于保存获取Block的结果信息（FetchResult）
+   *
    * A queue to hold our results. This turns the asynchronous model provided by
    * [[org.apache.spark.network.BlockTransferService]] into a synchronous model (iterator).
    */
   private[this] val results = new LinkedBlockingQueue[FetchResult]
 
   /**
+   * 当前正在处理的FetchResult
+   *
    * Current [[FetchResult]] being processed. We track this so we can release the current buffer
    * in case of a runtime exception when processing the current buffer.
    */
   @volatile private[this] var currentResult: SuccessFetchResult = null
 
   /**
+   * 获取Block的请求信息（FetchRequest）的队列
+   *
    * Queue of fetch requests to issue; we'll pull requests off this gradually to make sure that
    * the number of bytes in flight is limited to maxBytesInFlight.
    */
@@ -122,10 +152,17 @@ final class ShuffleBlockFetcherIterator(
    */
   private[this] val deferredFetchRequests = new HashMap[BlockManagerId, Queue[FetchRequest]]()
 
-  /** Current bytes in flight from our requests */
+  /**
+   * 返回FetchRequest要下载的所有Block的大小之和。
+   *
+   * Current bytes in flight from our requests
+   */
   private[this] var bytesInFlight = 0L
 
-  /** Current number of requests in flight */
+  /**
+   * 当前航班（批次）的请求的数量。
+   * Current number of requests in flight
+   */
   private[this] var reqsInFlight = 0
 
   /** Current number of blocks in flight per host:port */
@@ -266,6 +303,7 @@ final class ShuffleBlockFetcherIterator(
     // Make remote requests at most maxBytesInFlight / 5 in length; the reason to keep them
     // smaller than maxBytesInFlight is to allow multiple, parallel fetches from up to 5
     // nodes, rather than blocking on reading output from one node.
+    // 每个远程请求的最大尺寸。targetRequestSize等于maxBytesInFlight的1/5或者1
     val targetRequestSize = math.max(maxBytesInFlight / 5, 1L)
     logDebug("maxBytesInFlight: " + maxBytesInFlight + ", targetRequestSize: " + targetRequestSize
       + ", maxBlocksInFlightPerAddress: " + maxBlocksInFlightPerAddress)
@@ -275,6 +313,8 @@ final class ShuffleBlockFetcherIterator(
     val remoteRequests = new ArrayBuffer[FetchRequest]
 
     for ((address, blockInfos) <- blocksByAddress) {
+
+      // 若BlockManagerId对应的Executor与当前Executor相同，则将BlockManagerId对应的所有大小不为零的BlockId存入localBlocks
       if (address.executorId == blockManager.blockManagerId.executorId) {
         blockInfos.find(_._2 <= 0) match {
           case Some((blockId, size)) if size < 0 =>
@@ -285,11 +325,20 @@ final class ShuffleBlockFetcherIterator(
         }
         localBlocks ++= blockInfos.map(_._1)
         numBlocksToFetch += localBlocks.size
-      } else {
+      } else { // 是远程的Block
         val iterator = blockInfos.iterator
+        // 当前累加到curBlocks中的所有Block的大小之和，用于保证每个远程请求的尺寸不超过targetRequestSize的限制。
         var curRequestSize = 0L
+        // ArrayBuffer[(BlockId, Long)]，远程获取的累加缓存，用于保证每个远程请求的尺寸不超过targetRequestSize的限制。
+        // 为什么要累加缓存？如果向一个机器节点频繁地请求字节数很小的Block，那么势必造成网络拥塞并增加节点负担。将多个小数据量
+        // 的请求合并为一个大的请求将避免这些问题，提高系统性能。
         var curBlocks = new ArrayBuffer[(BlockId, Long)]
+
+        /**
+         * 遍历所有的迭代器
+         */
         while (iterator.hasNext) {
+          // 遍历迭代
           val (blockId, size) = iterator.next()
           if (size < 0) {
             throw new BlockException(blockId, "Negative block size " + size)
@@ -301,6 +350,11 @@ final class ShuffleBlockFetcherIterator(
             numBlocksToFetch += 1
             curRequestSize += size
           }
+
+          /**
+           * 每当curRequestSize≥targetRequestSize，则新建FetchRequest放入remoteRequests，并且为生成下一个FetchRequest做一些准备
+           * （如新建curBlocks, curRequestSize置为0）。
+           */
           if (curRequestSize >= targetRequestSize ||
               curBlocks.size >= maxBlocksInFlightPerAddress) {
             // Add this FetchRequest
@@ -323,6 +377,8 @@ final class ShuffleBlockFetcherIterator(
   }
 
   /**
+   * ShuffleBlockFetcherIterator的fetchUpToMaxBytes方法（见代码清单8-86）用于向远端发送请求，以获取Block。
+   *
    * Fetch the local blocks while we are fetching remote blocks. This is ok because
    * `ManagedBuffer`'s memory is allocated lazily when we create the input stream, so all we
    * track in-memory are the ManagedBuffer references themselves.
@@ -351,11 +407,16 @@ final class ShuffleBlockFetcherIterator(
 
   private[this] def initialize(): Unit = {
     // Add a task completion callback (called in both success case and failure case) to cleanup.
+    // 给TaskContextImpl添加任务完成的监听器，以便于任务执行完成后调用cleanup方法进行一些清理工作。
     context.addTaskCompletionListener[Unit](_ => cleanup())
 
     // Split local and remote blocks.
+    /**
+     * 划分从本地读取和需要远程读取的Block的请求。
+     */
     val remoteRequests = splitLocalRemoteBlocks()
     // Add the remote requests into our queue in a random order
+    // 将FetchRequest随机排序后存入fetchRequests。
     fetchRequests ++= Utils.randomize(remoteRequests)
     assert ((0 == reqsInFlight) == (0 == bytesInFlight),
       "expected reqsInFlight = 0 but found reqsInFlight = " + reqsInFlight +

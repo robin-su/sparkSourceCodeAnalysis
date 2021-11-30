@@ -30,18 +30,19 @@ import org.apache.spark.util.collection.ExternalSorter
  */
 private[spark] class BlockStoreShuffleReader[K, C](
     handle: BaseShuffleHandle[K, _, C],
-    startPartition: Int,
-    endPartition: Int,
+    startPartition: Int, //要读取的起始分区ID（分区索引）
+    endPartition: Int, // 要读取的起始分区ID（分区索引）
     context: TaskContext,
-    serializerManager: SerializerManager = SparkEnv.get.serializerManager,
-    blockManager: BlockManager = SparkEnv.get.blockManager,
-    mapOutputTracker: MapOutputTracker = SparkEnv.get.mapOutputTracker)
+    serializerManager: SerializerManager = SparkEnv.get.serializerManager, // 即SparkEnv的子组件SerializerManager。
+    blockManager: BlockManager = SparkEnv.get.blockManager, // 即SparkEnv的子组件BlockManager
+    mapOutputTracker: MapOutputTracker = SparkEnv.get.mapOutputTracker) // 即SparkEnv的子组件MapOutputTracker。
   extends ShuffleReader[K, C] with Logging {
 
   private val dep = handle.dependency
 
   /** Read the combined key-values for this reduce task */
   override def read(): Iterator[Product2[K, C]] = {
+    // 伴随着对本地和远端的Block的获取
     val wrappedStreams = new ShuffleBlockFetcherIterator(
       context,
       blockManager.shuffleClient,
@@ -78,7 +79,7 @@ private[spark] class BlockStoreShuffleReader[K, C](
     val interruptibleIter = new InterruptibleIterator[(Any, Any)](context, metricIter)
 
     val aggregatedIter: Iterator[Product2[K, C]] = if (dep.aggregator.isDefined) {
-      if (dep.mapSideCombine) {
+      if (dep.mapSideCombine) { // 如果指定了聚合函数且允许在map端进行合并，在reduce端对数据进行聚合
         // We are reading values that are already combined
         val combinedKeyValuesIterator = interruptibleIter.asInstanceOf[Iterator[(K, C)]]
         dep.aggregator.get.combineCombinersByKey(combinedKeyValuesIterator, context)

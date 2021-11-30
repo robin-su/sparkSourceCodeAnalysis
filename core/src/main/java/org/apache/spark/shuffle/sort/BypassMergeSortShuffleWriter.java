@@ -49,6 +49,9 @@ import org.apache.spark.storage.*;
 import org.apache.spark.util.Utils;
 
 /**
+ * 有时候，map端不需要在持久化数据之前进行聚合、排序等操作，那么ShuffleWriter的实现类之一BypassMergeSortShuffleWriter（从命名可以看出这是绕开合并、排序的Shuffle Writer）
+ *
+ *
  * This class implements sort-based shuffle's hash-style shuffle fallback path. This write path
  * writes incoming records to separate files, one file per reduce partition, then concatenates these
  * per-partition files to form a single output file, regions of which are served to reducers.
@@ -73,25 +76,48 @@ import org.apache.spark.util.Utils;
 final class BypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V> {
 
   private static final Logger logger = LoggerFactory.getLogger(BypassMergeSortShuffleWriter.class);
-
+  // 文件缓冲大小，可通过spark.shuffle.file.buffer属性配置，默认为32KB。
   private final int fileBufferSize;
+  // 是否采用NIO的从文件流到文件流的复制方式。可通过spark. file.transferTo属性配置，默认为true。
   private final boolean transferToEnabled;
+  // 分区数。
   private final int numPartitions;
   private final BlockManager blockManager;
+  // 分区计算器（Partitioner）。
   private final Partitioner partitioner;
+  // 对Shuffle写入（也就是map任务输出到磁盘）的度量，即ShuffleWrite Metrics。
   private final ShuffleWriteMetrics writeMetrics;
+  // Shuffle的唯一标识
   private final int shuffleId;
+  // map任务的身份标识。
   private final int mapId;
+  // 序列化器（Serializer）。
   private final Serializer serializer;
+  // 即IndexShuffleBlockResolver
   private final IndexShuffleBlockResolver shuffleBlockResolver;
 
-  /** Array of file writers, one for each partition */
+  /**
+   * DiskBlockObjectWriter类型的数组，每一个DiskBlockObjectWriter处理一个分区的数据。
+   *
+   * Array of file writers, one for each partition
+   */
   private DiskBlockObjectWriter[] partitionWriters;
+  /**
+   * FileSegment的数组，每一个FileSegment对应一个DiskBlockObjectWriter处理的文件片。
+   */
   private FileSegment[] partitionWriterSegments;
+  /**
+   * map任务的状态，即MapStatus。
+   */
   @Nullable private MapStatus mapStatus;
+  /**
+   * 长整型数组，每个元素记录一个分区的数据长度。
+   */
   private long[] partitionLengths;
 
   /**
+   * 标记BypassMergeSortShuffleWriter是否正在停止中。
+   *
    * Are we in the process of stopping? Because map tasks can call stop() with success = true
    * and then call stop() with success = false if they get an exception, we want to make sure
    * we don't try deleting files, etc twice.
@@ -106,6 +132,9 @@ final class BypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V> {
       TaskContext taskContext,
       SparkConf conf) {
     // Use getSizeAsKb (not bytes) to maintain backwards compatibility if no units are provided
+    /**
+     * 文件缓冲大小。可通过spark.shuffle.file.buffer属性配置，默认为32KB。
+     */
     this.fileBufferSize = (int) conf.getSizeAsKb("spark.shuffle.file.buffer", "32k") * 1024;
     this.transferToEnabled = conf.getBoolean("spark.file.transferTo", true);
     this.blockManager = blockManager;
@@ -122,14 +151,16 @@ final class BypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V> {
   @Override
   public void write(Iterator<Product2<K, V>> records) throws IOException {
     assert (partitionWriters == null);
-    if (!records.hasNext()) {
+    if (!records.hasNext()) { // 如果没有输出的记录，则只生成索引文件
       partitionLengths = new long[numPartitions];
       shuffleBlockResolver.writeIndexFileAndCommit(shuffleId, mapId, partitionLengths, null);
       mapStatus = MapStatus$.MODULE$.apply(blockManager.shuffleServerId(), partitionLengths);
       return;
     }
+    // 获取序列化器
     final SerializerInstance serInstance = serializer.newInstance();
     final long openStartTime = System.nanoTime();
+    // 获取DiskBlockObjectWriter
     partitionWriters = new DiskBlockObjectWriter[numPartitions];
     partitionWriterSegments = new FileSegment[numPartitions];
     for (int i = 0; i < numPartitions; i++) {

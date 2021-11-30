@@ -30,14 +30,22 @@ import org.apache.spark.storage.BlockManagerId
 import org.apache.spark.util.Utils
 
 /**
+ * MapStatus用于表示ShuffleMapTask返回给TaskScheduler的执行结果。
+ *
  * Result returned by a ShuffleMapTask to a scheduler. Includes the block manager address that the
  * task ran on as well as the sizes of outputs for each reducer, for passing on to the reduce tasks.
  */
 private[spark] sealed trait MapStatus {
-  /** Location where this task was run. */
+  /**
+   * location方法用于返回ShuffleMapTask运行的位置，即所在节点的BlockManager的身份标识BlockManagerId
+   *
+   * Location where this task was run.
+   */
   def location: BlockManagerId
 
   /**
+   * getSizeForBlock用于返回reduce任务需要拉取的Block的大小（单位为字节）。
+   *
    * Estimated size for the reduce block, in bytes.
    *
    * If a block is non-empty, then this method MUST return a non-zero size.  This invariant is
@@ -50,6 +58,9 @@ private[spark] sealed trait MapStatus {
 private[spark] object MapStatus {
 
   /**
+   * 分别创建HighlyCompressedMapStatus和CompressedMapStatus，这说明对于较大的数据量使用高度压缩的HighlyCompressedMapStatus，
+   * 一般的数据量则使用CompressedMapStatus。
+   *
    * Min partition number to use [[HighlyCompressedMapStatus]]. A bit ugly here because in test
    * code we can't assume SparkEnv.get exists.
    */
