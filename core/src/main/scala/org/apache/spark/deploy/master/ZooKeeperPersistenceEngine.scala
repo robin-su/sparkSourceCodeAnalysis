@@ -34,7 +34,10 @@ import org.apache.spark.serializer.Serializer
 private[master] class ZooKeeperPersistenceEngine(conf: SparkConf, val serializer: Serializer)
   extends PersistenceEngine
   with Logging {
-
+  /**
+   * ZooKeeperPersistenceEngine在ZooKeeper上的工作目录，是Spark基于ZooKeeper进行热备的根节点
+   * （可通过spark.deploy.ZooKeeper.dir属性配置，默认为spark）的子节点master_status。
+   */
   private val WORKING_DIR = conf.get("spark.deploy.zookeeper.dir", "/spark") + "/master_status"
   private val zk: CuratorFramework = SparkCuratorUtil.newClient(conf)
 
