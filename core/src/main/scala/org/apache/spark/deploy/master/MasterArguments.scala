@@ -24,6 +24,8 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.util.{IntParam, Utils}
 
 /**
+ * 命令行参数指定的值会覆盖系统环境变量指定的值。属性spark.master.ui.port指定的值会覆盖系统环境变量SPARK_MASTER_WEBUI_PORT或命令行参数--webui-port的值。
+ *
  * Command-line parser for the master.
  */
 private[master] class MasterArguments(args: Array[String], conf: SparkConf) extends Logging {

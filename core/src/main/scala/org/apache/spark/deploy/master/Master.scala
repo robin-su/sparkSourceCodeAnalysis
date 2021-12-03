@@ -38,6 +38,30 @@ import org.apache.spark.rpc._
 import org.apache.spark.serializer.{JavaSerializer, Serializer}
 import org.apache.spark.util.{SparkUncaughtExceptionHandler, ThreadUtils, Utils}
 
+/**
+ * Master的职责包括Worker的管理、Application的管理、Driver的管理等。Master负责对整个集群中所有资源的统一管理和分配，它接收各个Worker的注册、
+ * 更新状态、心跳等消息，也接收Driver和Application的注册.Worker向Master注册时会携带自身的身份和资源信息（如ID、host、port、内核数、内存大小
+ * 等），这些资源将按照一定的资源调度策略分配给Driver或Application。Master给Driver分配了资源后，将向Worker发送启动Driver的命令，后者在接收
+ * 到启动Driver的命令后启动Driver。Master给Application分配了资源后，将向Worker发送启动Executor的命令，后者在接收到启动Executor的命令后
+ * 启动Executor。
+ *
+ * Master接收Worker的状态更新消息，用于“杀死”不匹配的Driver或Application。
+ *
+ * Worker向Master发送的心跳消息有两个目的：一是告知Master自己还“活着”，另外则是某个Master出现故障后，通过领导选举选择了其他Master负责对整个
+ * 集群的管理，此时被激活的Master可能并没有缓存Worker的相关信息，因此需要告知Worker重新向新的Master注册。
+ *
+ *
+ * Master接收到Driver提交的应用程序后，需要根据应用的资源需求，将应用分配到Worker上去运行。一个集群刚开始的时候只有Master，为了让后续启动的
+ * Worker加入到Master的集群中，每个Worker都需要在启动的时候向Master注册，Master接收到Worker的注册信息后，将把Worker的各种重要信息（如ID、
+ * host、port、内核数、内存大小等信息）缓存起来，以便进行资源的分配与调度。Master为了容灾，还将Worker的信息通过持久化引擎进行持久化，以便经过
+ * 领导选举出的新Master能够将集群的状态从错误或灾难中恢复。
+ *
+ * @param rpcEnv
+ * @param address
+ * @param webUiPort
+ * @param securityMgr
+ * @param conf
+ */
 private[deploy] class Master(
     override val rpcEnv: RpcEnv,
     address: RpcAddress,
@@ -46,7 +70,8 @@ private[deploy] class Master(
     val conf: SparkConf)
   extends ThreadSafeRpcEndpoint with Logging with LeaderElectable {
 
-//  发送消息的线程
+//  包含一个线程的ScheduledThreadPoolExecutor，启动的线程以master-forward-message-thread作为名称。forwardMessageThread主要用于运行
+//  checkForWorkerTimeOutTask和recoveryCompletionTask。
   private val forwardMessageThread =
     ThreadUtils.newDaemonSingleThreadScheduledExecutor("master-forward-message-thread")
 //  加载hadoopconf配置
@@ -61,36 +86,38 @@ private[deploy] class Master(
   private val RETAINED_APPLICATIONS = conf.getInt("spark.deploy.retainedApplications", 200)
 // 保存执行的driver数量，默认是200
   private val RETAINED_DRIVERS = conf.getInt("spark.deploy.retainedDrivers", 200)
-// 断开的worker信息保存数量，默认15
+// 从workers中移除处于死亡（DEAD）状态的Worker所对应的WorkerInfo的权重。可通过spark.dead.worker.persistence属性配置，默认为15。
   private val REAPER_ITERATIONS = conf.getInt("spark.dead.worker.persistence", 15)
-// worker回复模式,默认none
+// 恢复模式。可通过spark.deploy.recoveryMode属性配置，默认为NONE。
   private val RECOVERY_MODE = conf.get("spark.deploy.recoveryMode", "NONE")
-// executor最大运行,默认10
+// Executor的最大重试数。可通过spark.deploy.max-ExecutorRetries属性配置，默认为10。
   private val MAX_EXECUTOR_RETRIES = conf.getInt("spark.deploy.maxExecutorRetries", 10)
-// workers节点信息
+// 所有注册到Master的Worker信息（WorkerInfo）的集合
   val workers = new HashSet[WorkerInfo]
-// appId对应的app信息
+// Application ID与ApplicationInfo的映射关系。
   val idToApp = new HashMap[String, ApplicationInfo]
-//  队列中等待执行的app信息
+//  正等待调度的Application所对应的ApplicationInfo的集合。
   private val waitingApps = new ArrayBuffer[ApplicationInfo]
-//  所有app信息
+//  所有ApplicationInfo的集合。
   val apps = new HashSet[ApplicationInfo]
-// workId对应的work节点信息
+// Worker id与WorkerInfo的映射关系。
   private val idToWorker = new HashMap[String, WorkerInfo]
-//  RPC中注册的ip对应的work信息
+//  Worker的RpcEnv的地址（RpcAddress）与WorkerInfo的映射关系。
   private val addressToWorker = new HashMap[RpcAddress, WorkerInfo]
-// app与对应RPC注册的信息
+// RpcEndpointRef与ApplicationInfo的映射关系
   private val endpointToApp = new HashMap[RpcEndpointRef, ApplicationInfo]
-//  RPC中注册的ip与对应的app
+//  RpcEndpointRef与ApplicationInfo的映射关系。
   private val addressToApp = new HashMap[RpcAddress, ApplicationInfo]
-// 完成的app
+// RpcEndpointRef与ApplicationInfo的映射关系。
   private val completedApps = new ArrayBuffer[ApplicationInfo]
   private var nextAppNumber = 0
-// driver信息
+// 所有Driver信息（DriverInfo）的集合。
   private val drivers = new HashSet[DriverInfo]
+  // 已经完成的DriverInfo的集合。
   private val completedDrivers = new ArrayBuffer[DriverInfo]
-  // Drivers currently spooled for scheduling
+  // 正等待调度的Driver所对应的DriverInfo的集合。
   private val waitingDrivers = new ArrayBuffer[DriverInfo]
+  // 下一个Driver的号码。
   private var nextDriverNumber = 0
 //  检查host
   Utils.checkHost(address.host)
@@ -101,28 +128,29 @@ private[deploy] class Master(
 //  app注册Metrics服务
   private val applicationMetricsSystem = MetricsSystem.createMetricsSystem("applications", conf,
     securityMgr)
-//  就是包含了上面所有信息的master
+// 类型为MasterSource，是有关Master的度量来源。
   private val masterSource = new MasterSource(this)
 
 // After onStart, webUi will be set
-//  webUI,在onStart后会设置
+//  Master的WebUI，类型为WebUI的子类MasterWebUI。
   private var webUi: MasterWebUI = null
 // master的公共访问地址
   private val masterPublicAddress = {
     val envVar = conf.getenv("SPARK_PUBLIC_DNS")
     if (envVar != null) envVar else address.host
   }
-// master的url,即:spark://192.168.2.1:7077
+// Master的Spark URL（即spark://host:port格式的地址）。
   private val masterUrl = address.toSparkURL
+  // Master的WebUI的URL。
   private var masterWebUiUrl: String = _
 
-  // 恢复状态为从standby恢复
+  // Master所处的状态。Master的状态包括支持（STANDBY）、激活（ALIVE）、恢复中（RECOVERING）、完成恢复（COMPLETING_RECOVERY）等。
   private var state = RecoveryState.STANDBY
   // 持久化引擎
   private var persistenceEngine: PersistenceEngine = _
-//  选主
+//  领导选举代理（LeaderElectionAgent）
   private var leaderElectionAgent: LeaderElectionAgent = _
-  // 恢复已完成tesk
+  // 当Master被选举为领导后，用于集群状态恢复的任务。
   private var recoveryCompletionTask: ScheduledFuture[_] = _
   // 超时的test检查
   private var checkForWorkerTimeOutTask: ScheduledFuture[_] = _
@@ -146,7 +174,9 @@ private[deploy] class Master(
 //  备用app提交网关
 //  开启rest服务,默认开启
   private val restServerEnabled = conf.getBoolean("spark.master.rest.enabled", false)
+  // REST服务的实例，类型为StandaloneRestServer。
   private var restServer: Option[StandaloneRestServer] = None
+  // REST服务绑定的端口。
   private var restServerBoundPort: Option[Int] = None
 
   {
@@ -160,7 +190,7 @@ private[deploy] class Master(
   override def onStart(): Unit = {
     logInfo("Starting Spark master at " + masterUrl)
     logInfo(s"Running Spark version ${org.apache.spark.SPARK_VERSION}")
-    webUi = new MasterWebUI(this, webUiPort)
+    webUi = new MasterWebUI(this, webUiPort) // 创建Master的Web UI
 //    启动web ui，其实部署在jetty容器中
     webUi.bind()
     masterWebUiUrl = "http://" + masterPublicAddress + ":" + webUi.boundPort
@@ -240,6 +270,10 @@ private[deploy] class Master(
     leaderElectionAgent.stop()
   }
 
+  /**
+   * electedLeader方法只是向Master自身发送了ElectedLeader消息。
+   * Master的receive方法中实现了对ElectedLeader消息的处理
+   */
   override def electedLeader() {
     self.send(ElectedLeader)
   }
@@ -250,8 +284,12 @@ private[deploy] class Master(
 //  接受信息判断主从情况
   override def receive: PartialFunction[Any, Unit] = {
     case ElectedLeader =>
-//      如果选主，通过RPC及持久化信息进行判断是否存活
+//      从持久化引擎中读取出持久化的ApplicationInfo、DriverInfo、WorkerInfo等信息。
       val (storedApps, storedDrivers, storedWorkers) = persistenceEngine.readPersistedData(rpcEnv)
+
+      /**
+       * 如果没有任何持久化信息，那么将Master的当前状态设置为激活（ALIVE），否则将Master的当前状态设置为恢复中（RECOVERING）。
+       */
       state = if (storedApps.isEmpty && storedDrivers.isEmpty && storedWorkers.isEmpty) {
         RecoveryState.ALIVE
       } else {
@@ -259,8 +297,12 @@ private[deploy] class Master(
       }
       logInfo("I have been elected leader! New state: " + state)
       if (state == RecoveryState.RECOVERING) {
-//        开始恢复
+//      如果Master的当前状态为RECOVERING，则调用beginRecovery方法对整个集群的状态进行恢复
         beginRecovery(storedApps, storedDrivers, storedWorkers)
+
+        /**
+         * 在集群状态恢复完成后，创建延时任务recoveryCompletionTask，在常量WORKER_TIMEOUT_MS指定的时间后向Master自身发送CompleteRecovery消息
+         */
         recoveryCompletionTask = forwardMessageThread.schedule(new Runnable {
           override def run(): Unit = Utils.tryLogNonFatalError {
             self.send(CompleteRecovery)
@@ -280,13 +322,14 @@ private[deploy] class Master(
       logInfo("Registering worker %s:%d with %d cores, %s RAM".format(
         workerHost, workerPort, cores, Utils.megabytesToString(memory)))
       // 判断Master存活，进行Worker提示或者注册
-      if (state == RecoveryState.STANDBY) {
+      if (state == RecoveryState.STANDBY) { // 如果Master的状态是STANDBY，那么向Worker回复MasterInStandby消息。
         workerRef.send(MasterInStandby)
         // master存储，根据id判断worker是否已经存在
-      } else if (idToWorker.contains(id)) {
+      } else if (idToWorker.contains(id)) { // 如果idToWorker中已经有了要注册的Worker的信息，那么说明Worker重复注册，
+        // Master向Worker回复RegisterWorkerFailed消息。
         workerRef.send(RegisterWorkerFailed("Duplicate worker ID"))
       } else {
-        // master存活，且workerid不重复，进行注册
+        // 利用RegisterWorker消息携带的信息创建WorkerInfo。
         val worker = new WorkerInfo(id, workerHost, workerPort, cores, memory,
           workerRef, workerWebUiUrl)
         if (registerWorker(worker)) {
@@ -423,10 +466,18 @@ private[deploy] class Master(
 
       if (canCompleteRecovery) { completeRecovery() }
 
+    /**
+     * Worker在向Master注册成功后，会向Master发送WorkerLatestState消息。Worker-LatestState消息将携带Worker的身份标识、Worker节点的
+     * 所有Executor的描述信息、调度到当前Worker的所有Driver的身份标识。Master接收到WorkerLatestState消息的处理如下。
+     */
     case WorkerLatestState(workerId, executors, driverIds) =>
+      // 根据Worker的身份标识，从idToWorker取出注册的WorkerInfo。
       idToWorker.get(workerId) match {
         case Some(worker) =>
+          // 遍历executors中的每个ExecutorDescription
           for (exec <- executors) {
+            // 遍历executors中的每个ExecutorDescription，与WorkerInfo的executors中保存的ExecutorDesc按照应用ID和Executor ID
+            // 进行匹配。对于匹配不成功的，向Worker发送KillExecutor消息以“杀死”Executor。
             val executorMatches = worker.executors.exists {
               case (_, e) => e.application.id == exec.appId && e.id == exec.execId
             }
@@ -561,10 +612,18 @@ private[deploy] class Master(
       logInfo("Trying to recover app: " + app.id)
       try {
         // 注册应用
+        /**
+         * 调用registerApplication方法（见代码清单9-44）将ApplicationInfo添加到
+         * apps、idToApp、endpointToApp、addressToApp、waitingApps等缓存中。
+         */
         registerApplication(app)
 //        将应用的状态设置成UNKONWN
         app.state = ApplicationState.UNKNOWN
-//        通知worker master发生了变更
+        /**
+         * 向提交应用程序的Driver发送MasterChanged消息（此消息将携带被选举为领导的Master和此Master的masterWebUiUrl属性）。
+         * Driver接收到MasterChanged消息后，将自身的master属性修改为当前Master的RpcEndpointRef，并将alreadyDisconnected
+         * 设置为false，最后向Master发送MasterChangeAcknowledged消息
+         */
         app.driver.send(MasterChanged(self, masterWebUiUrl))
       } catch {
         case e: Exception => logInfo("App " + app.id + " had exception on reconnect")
@@ -591,23 +650,34 @@ private[deploy] class Master(
 
   private def completeRecovery() {
     // Ensure "only-once" recovery semantics using a short synchronization period.
+    // 如果Master的状态不是RECOVERING，直接返回。
     if (state != RecoveryState.RECOVERING) { return }
     state = RecoveryState.COMPLETING_RECOVERY
 
     // Kill off any workers and apps that didn't respond to us.
+    /**
+     * 将workers中状态为UNKNOWN的所有WorkerInfo，通过调用removeWorker方法从Master中移除。
+     */
     workers.filter(_.state == WorkerState.UNKNOWN).foreach(
       removeWorker(_, "Not responding for recovery"))
+    /**
+     * 将apps中状态为UNKNOWN的所有ApplicationInfo，通过调用finishApplication方法从Master中移除。
+     */
     apps.filter(_.state == ApplicationState.UNKNOWN).foreach(finishApplication)
 
     // Update the state of recovered apps to RUNNING
     apps.filter(_.state == ApplicationState.WAITING).foreach(_.state = ApplicationState.RUNNING)
 
     // Reschedule drivers which were not claimed by any workers
+    /**
+     * 从drivers中过滤出还没有分配Worker的所有DriverInfo，如果Driver是被监管的，则调用relaunchDriver方法重新调度运行指定的Driver，
+     * 否则调用removeDriver方法移除Master维护的关于指定Driver的相关信息和状态。
+     */
     drivers.filter(_.worker.isEmpty).foreach { d =>
       logWarning(s"Driver ${d.id} was not found after master recovery")
       if (d.desc.supervise) {
         logWarning(s"Re-launching ${d.id}")
-        relaunchDriver(d)
+        relaunchDriver(d) // 重新调度运行指定的Driver
       } else {
         removeDriver(d.id, DriverState.ERROR, None)
         logWarning(s"Did not re-launch ${d.id} because it was not supervised")
@@ -649,17 +719,36 @@ private[deploy] class Master(
       app: ApplicationInfo,
       usableWorkers: Array[WorkerInfo],
       spreadOutApps: Boolean): Array[Int] = {
+    // Application要求的每个Executor所需的内核数。
     val coresPerExecutor = app.desc.coresPerExecutor
+    // Application要求的每个Executor所需的最小内核数。
     val minCoresPerExecutor = coresPerExecutor.getOrElse(1)
+    // 是否在每个Worker上只分配一个Executor。当Application没有配置coresPerExecutor时，oneExecutorPerWorker为true。
     val oneExecutorPerWorker = coresPerExecutor.isEmpty
+    // Application要求的每个Executor所需的内存大小（单位为字节）。
     val memoryPerExecutor = app.desc.memoryPerExecutorMB
+    // 缓存从workers中选出的状态为ALIVE、空闲空间满足ApplicationInfo要求的每个Executor使用的内存大小、空闲内核数满足coresPerExecutor的所有WorkerInfo。
     val numUsable = usableWorkers.length
+    // 用于保存每个Worker给Application分配的内核数的数组。通过数组索引与usableWorkers中的WorkerInfo相对应。
     val assignedCores = new Array[Int](numUsable) // Number of cores to give to each worker
+    // 用于保存每个Worker给应用分配的Executor数的数组。通过数组索引与usableWorkers中的WorkerInfo相对应。
     val assignedExecutors = new Array[Int](numUsable) // Number of new executors on each worker
+    // 给Application要分配的内核数。coresToAssign取usableWorkers中所有WorkerInfo的空闲内核数之和与Application还需的内核数中的最小值。
+    /**
+     * app.coresLeft：Application还需的内核数中的最小值
+     * usableWorkers.map(_.coresFree).sum)： 表示WorkerInfo的空闲内核数之和
+     */
     var coresToAssign = math.min(app.coresLeft, usableWorkers.map(_.coresFree).sum)
 
     /** Return whether the specified worker can launch an executor for this app. */
+    /**
+     * 判断usableWorkers中索引为参数pos指定的位置上的WorkerInfo是否能运行Executor
+     *
+     * @param pos
+     * @return
+     */
     def canLaunchExecutor(pos: Int): Boolean = {
+      // 若
       val keepScheduling = coresToAssign >= minCoresPerExecutor
       val enoughCores = usableWorkers(pos).coresFree - assignedCores(pos) >= minCoresPerExecutor
 
@@ -717,18 +806,26 @@ private[deploy] class Master(
     // Right now this is a very simple FIFO scheduler. We keep trying to fit in the first app
     // in the queue, then the second app, etc.
     for (app <- waitingApps) {
-      val coresPerExecutor = app.desc.coresPerExecutor.getOrElse(1)
+      val coresPerExecutor = app.desc.coresPerExecutor.getOrElse(1) // 获取每个Executor使用的内核数
       // If the cores left is less than the coresPerExecutor,the cores left will not be allocated
       if (app.coresLeft >= coresPerExecutor) {
         // Filter out workers that don't have enough resources to launch an executor
+        /**
+         * 找出workers中状态为ALIVE、空闲空间满足Application要求的每个Executor使用的内存大小、空闲内核数满足coresPerExecutor的所有
+         * WorkerInfo，并对这些WorkerInfo按照空闲内核数倒序排列，这样可以优先将应用分配给内核资源充足的Worker。
+         */
         val usableWorkers = workers.toArray.filter(_.state == WorkerState.ALIVE)
           .filter(worker => worker.memoryFree >= app.desc.memoryPerExecutorMB &&
             worker.coresFree >= coresPerExecutor)
           .sortBy(_.coresFree).reverse
+        /**
+         * scheduleExecutorsOnWorkers方法返回在各个Worker上分配的内核数。
+         */
         val assignedCores = scheduleExecutorsOnWorkers(app, usableWorkers, spreadOutApps)
 
         // Now that we've decided how many cores to allocate on each worker, let's allocate them
         for (pos <- 0 until usableWorkers.length if assignedCores(pos) > 0) {
+          // 将Worker上的资源分配给Executor。
           allocateWorkerResourceToExecutors(
             app, assignedCores(pos), app.desc.coresPerExecutor, usableWorkers(pos))
         }
@@ -765,30 +862,49 @@ private[deploy] class Master(
    * every time a new app joins or resource availability changes.
    */
   private def schedule(): Unit = {
+    // 如果Master的状态不是ALIVE，那么直接返回。
     if (state != RecoveryState.ALIVE) {
       return
     }
     // Drivers take strict precedence over executors
+    /**
+     * 过滤出workers中缓存的状态为ALIVE的WorkerInfo，并随机洗牌，以避免Driver总是分配给小部分的Worker。
+     */
     val shuffledAliveWorkers = Random.shuffle(workers.toSeq.filter(_.state == WorkerState.ALIVE))
     val numWorkersAlive = shuffledAliveWorkers.size
     var curPos = 0
+    /**
+     * 遍历waitingDrivers中的DriverInfo
+     */
     for (driver <- waitingDrivers.toList) { // iterate over a copy of waitingDrivers
       // We assign workers to each waiting driver in a round-robin fashion. For each driver, we
       // start from the last worker that was assigned a driver, and continue onwards until we have
       // explored all alive workers.
       var launched = false
       var numWorkersVisited = 0
+
+      /**
+       * 步筛选的WorkerInfo中，挑出内存大小和内核数都满足Driver需要的。
+       */
       while (numWorkersVisited < numWorkersAlive && !launched) {
         val worker = shuffledAliveWorkers(curPos)
         numWorkersVisited += 1
         if (worker.memoryFree >= driver.desc.mem && worker.coresFree >= driver.desc.cores) {
+          // 调用launchDriver运行Driver
           launchDriver(worker, driver)
+          /**
+           * 将DriverInfo从waitingDrivers中移除。
+           */
           waitingDrivers -= driver
           launched = true
         }
         curPos = (curPos + 1) % numWorkersAlive
       }
     }
+
+    /**
+     * 在Worker上启动Executor
+     */
     startExecutorsOnWorkers()
   }
 
@@ -1035,13 +1151,17 @@ private[deploy] class Master(
   private def timeOutDeadWorkers() {
     // Copy the workers into an array so we don't modify the hashset while iterating through it
     val currentTime = System.currentTimeMillis()
+
+    // 过滤出所有超时的Worker，即当前时间与WORKER_TIMEOUT_MS之差仍然大于WorkerInfo的lastHeartbeat的Worker节点。
     val toRemove = workers.filter(_.lastHeartbeat < currentTime - WORKER_TIMEOUT_MS).toArray
     for (worker <- toRemove) {
+      //如果WorkerInfo的状态不是DEAD，则调用removeWorker方法
       if (worker.state != WorkerState.DEAD) {
         logWarning("Removing %s because we got no heartbeat in %d seconds".format(
           worker.id, WORKER_TIMEOUT_MS / 1000))
         removeWorker(worker, s"Not receiving heartbeat for ${WORKER_TIMEOUT_MS / 1000} seconds")
       } else {
+        // 如果WorkerInfo的状态是DEAD，则等待足够长的时间后将它从workers列表中移除。足够长的时间的计算公式为：REAPER_ITERATIONS与1的和再乘以WORKER_TIMEOUT_MS。
         if (worker.lastHeartbeat < currentTime - ((REAPER_ITERATIONS + 1) * WORKER_TIMEOUT_MS)) {
           workers -= worker // we've seen this DEAD worker in the UI, etc. for long enough; cull it
         }
@@ -1104,6 +1224,7 @@ private[deploy] object Master extends Logging {
     // 初始化日志输出
     Utils.initDaemon(log)
     // 创建conf对象其实是读取Spark默认配置的参数
+    // 创建MasterArguments以对执行main函数时传递的参数进行解析。在解析的过程中会将Spark属性配置文件中以spark．开头的属性保存到SparkConf。
     val conf = new SparkConf
     // 解析配置,初始化RPC服务和终端
     // 通过MasterArguments解析RPC需要的参数:host,port,webui-port
@@ -1130,6 +1251,7 @@ private[deploy] object Master extends Logging {
     val rpcEnv = RpcEnv.create(SYSTEM_NAME, host, port, conf, securityMgr)
     // 向RPC注册master终端
     // 这里new Master的时候进行了Master的实例化
+    // 创建Master，并且将Master（Master也继承了ThreadSafeRpcEndpoint）注册到刚创建的RpcEnv中，并获得Master的RpcEndpointRef。
     val masterEndpoint = rpcEnv.setupEndpoint(ENDPOINT_NAME,
       new Master(rpcEnv, rpcEnv.address, webUiPort, securityMgr, conf))
     // rest的绑定端口
