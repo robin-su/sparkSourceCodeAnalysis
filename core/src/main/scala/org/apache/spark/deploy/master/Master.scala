@@ -501,7 +501,7 @@ private[deploy] class Master(
     case UnregisterApplication(applicationId) =>
       logInfo(s"Received unregister request from application $applicationId")
       idToApp.get(applicationId).foreach(finishApplication)
-
+    // 心跳检测
     case CheckForWorkerTimeOut =>
       timeOutDeadWorkers()
 
