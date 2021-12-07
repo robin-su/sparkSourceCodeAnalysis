@@ -56,6 +56,11 @@ import org.apache.spark.util.{SparkUncaughtExceptionHandler, ThreadUtils, Utils}
  * host、port、内核数、内存大小等信息）缓存起来，以便进行资源的分配与调度。Master为了容灾，还将Worker的信息通过持久化引擎进行持久化，以便经过
  * 领导选举出的新Master能够将集群的状态从错误或灾难中恢复。
  *
+ * 在Spark集群中，Master接收到Driver提交的应用程序后，需要根据应用的资源需求，将应用分配到Worker上去运行。一个集群刚开始的时候只有Master，
+ * 为了让后续启动的Worker加入到Master的集群中，每个Worker都需要在启动的时候向Master注册，Master接收到Worker的注册信息后，将把Worker的
+ * 各种重要信息（如ID、host、port、内核数、内存大小等信息）缓存起来，以便进行资源的分配与调度。Master为了容灾，还将Worker的信息通过持久化引
+ * 擎进行持久化，以便经过领导选举出的新Master能够将集群的状态从错误或灾难中恢复。
+ *
  * @param rpcEnv
  * @param address
  * @param webUiPort
@@ -333,6 +338,10 @@ private[deploy] class Master(
         val worker = new WorkerInfo(id, workerHost, workerPort, cores, memory,
           workerRef, workerWebUiUrl)
         if (registerWorker(worker)) {
+          /**
+           * 如果注册成功，那么对WorkerInfo进行持久化并向Worker回复RegisteredWorker消息，最后调用schedule方法进行资源的调度。
+           * 如果注册失败，则向Worker回复RegisterWorkerFailed消息。
+           */
           persistenceEngine.addWorker(worker)
           workerRef.send(RegisteredWorker(self, masterWebUiUrl, masterAddress))
           schedule()
@@ -347,15 +356,31 @@ private[deploy] class Master(
 
     case RegisterApplication(description, driver) =>
       // TODO Prevent repeated registrations from some driver
+      // 如果Master当前的状态是STANDBY，那么不作任何处理。
       if (state == RecoveryState.STANDBY) {
         // ignore, don't send response
       } else {
         logInfo("Registering app " + description.name)
+        /**
+         * 利用RegisterApplication消息携带的信息调用createApplication方法，创建ApplicationInfo。createApplication方法中会给
+         * Application分配ID。此ID的生成规则为app-${yyyyMMddHHmmss}-${nextAppNumber}。
+         */
         val app = createApplication(description, driver)
+        // 注册应用
         registerApplication(app)
         logInfo("Registered app " + description.name + " with ID " + app.id)
+        // 对ApplicationInfo持久化
         persistenceEngine.addApplication(app)
+
+        /**
+         *  向ClientEndpoint发送RegisteredApplication消息（此消息将携带为Application生成的ID和Master自身的RpcEndpointRef），
+         *  以表示注册Application信息成功。
+         */
         driver.send(RegisteredApplication(app.id, self))
+
+        /**
+         * 调用schedule方法进行资源调度。
+         */
         schedule()
       }
 
@@ -717,7 +742,7 @@ private[deploy] class Master(
    */
   private def scheduleExecutorsOnWorkers(
       app: ApplicationInfo,
-      usableWorkers: Array[WorkerInfo],
+      usableWorkers: Array[WorkerInfo], // 缓存从workers中选出的状态为ALIVE、空闲空间满足ApplicationInfo要求的每个Executor使用的内存大小、空闲内核数满足coresPerExecutor的所有WorkerInfo。
       spreadOutApps: Boolean): Array[Int] = {
     // Application要求的每个Executor所需的内核数。
     val coresPerExecutor = app.desc.coresPerExecutor
@@ -748,8 +773,10 @@ private[deploy] class Master(
      * @return
      */
     def canLaunchExecutor(pos: Int): Boolean = {
-      // 若
+      // Executor可用于被分配的CPU核心数大于Application需要的每个Executor的最小核心数
       val keepScheduling = coresToAssign >= minCoresPerExecutor
+
+      // usableWorkers中索引位置为pos的WorkerInfo的空闲的cores - 已经被Application分配的内核数量 > Application需要的每个Executor的最小核心数
       val enoughCores = usableWorkers(pos).coresFree - assignedCores(pos) >= minCoresPerExecutor
 
       // If we allow multiple executors per worker, then we can always launch new executors.
@@ -774,11 +801,15 @@ private[deploy] class Master(
       freeWorkers.foreach { pos =>
         var keepScheduling = true
         while (keepScheduling && canLaunchExecutor(pos)) {
+          // 由于给Application分配Executor时，每个Executor都至少需要minCoresPerExecutor指定大小的内核，
+          // 因此将coresToAssign减去minCoresPerExecutor的大小。
           coresToAssign -= minCoresPerExecutor
+          //将usableWorkers的pos位置的WorkerInfo已经分配的内核数（即assignedCores的pos位置的数字）增加minCoresPerExecutor的大小。
           assignedCores(pos) += minCoresPerExecutor
 
           // If we are launching one executor per worker, then every iteration assigns 1 core
           // to the executor. Otherwise, every iteration assigns cores to a new executor.
+          // 如果oneExecutorPerWorker为true，则将assignedExecutors的索引为pos的值设置为1，否则将assignedExecutors的索引为pos的值增1。
           if (oneExecutorPerWorker) {
             assignedExecutors(pos) = 1
           } else {
@@ -806,7 +837,7 @@ private[deploy] class Master(
     // Right now this is a very simple FIFO scheduler. We keep trying to fit in the first app
     // in the queue, then the second app, etc.
     for (app <- waitingApps) {
-      val coresPerExecutor = app.desc.coresPerExecutor.getOrElse(1) // 获取每个Executor使用的内核数
+      val coresPerExecutor = app.desc.coresPerExecutor.getOrElse(1) // 获取Application要求的每个Executor使用的内核数coresPerExecutor。
       // If the cores left is less than the coresPerExecutor,the cores left will not be allocated
       if (app.coresLeft >= coresPerExecutor) {
         // Filter out workers that don't have enough resources to launch an executor
@@ -848,8 +879,17 @@ private[deploy] class Master(
     // If the number of cores per executor is specified, we divide the cores assigned
     // to this worker evenly among the executors with no remainder.
     // Otherwise, we launch a single executor that grabs all the assignedCores on this worker.
+    /**
+     * 根据Worker分配给Application的内核数（assignedCores）与每个Executor需要的内核数（coresPerExecutor），
+     * 计算在Worker上要运行的Executor数量（numExecutors）。如果没有指定coresPerExecutor，说明assignedCores
+     * 指定的所有内核都由一个Executor使用。
+     */
     val numExecutors = coresPerExecutor.map { assignedCores / _ }.getOrElse(1)
     val coresToAssign = coresPerExecutor.getOrElse(assignedCores)
+
+    /**
+     * 按照numExecutors的值，多次调用launchExecutor方法，在Worker上创建、运行Executor，并将ApplicationInfo的状态设置为RUNNING。
+     */
     for (i <- 1 to numExecutors) {
       val exec = app.addExecutor(worker, coresToAssign)
       launchExecutor(worker, exec)
@@ -863,7 +903,7 @@ private[deploy] class Master(
    */
   private def schedule(): Unit = {
     // 如果Master的状态不是ALIVE，那么直接返回。
-    if (state != RecoveryState.ALIVE) {
+    if (state != RecoveryState.ALIVE) { //都已经运行了，因此不用再重新分配资源
       return
     }
     // Drivers take strict precedence over executors
@@ -910,9 +950,15 @@ private[deploy] class Master(
 
   private def launchExecutor(worker: WorkerInfo, exec: ExecutorDesc): Unit = {
     logInfo("Launching executor " + exec.fullId + " on worker " + worker.id)
+    // 调用WorkerInfo的addExecutor方法添加新的Executor的信息
     worker.addExecutor(exec)
+    // 向Worker发送LaunchExecutor消息（此消息携带着masterUrl、Application的ID、Executor的ID、Application的描述信息
+    // ApplicationDescription、Executor分配获得的内核数、Executor分配获得的内存大小等信息）
     worker.endpoint.send(LaunchExecutor(masterUrl,
       exec.application.id, exec.id, exec.application.desc, exec.cores, exec.memory))
+    // 向提交应用的Driver发送ExecutorAdded消息（此消息携带着Executor的ID、Worker的ID、Worker的host和port、Executor分配获得的内核数、
+    // Executor分配获得的内存大小等信息）。ClientEndpoint接收到ExecutorAdded消息后，将调用StandaloneAppClientListener的executorAdded方法。
+    // 由于StandaloneAppClientListener只有StandaloneSchedulerBackend这一个实现类，因此实际上调用了StandaloneSchedulerBackend的executorAdded方法
     exec.application.driver.send(
       ExecutorAdded(exec.id, worker.id, worker.hostPort, exec.cores, exec.memory))
   }
@@ -920,6 +966,7 @@ private[deploy] class Master(
   private def registerWorker(worker: WorkerInfo): Boolean = {
     // There may be one or more refs to dead workers on this same node (w/ different ID's),
     // remove them.
+    // 从workers中移除host和port与要注册的WorkerInfo的host和port一样，且状态为DEAD的WorkerInfo。
     workers.filter { w =>
       (w.host == worker.host && w.port == worker.port) && (w.state == WorkerState.DEAD)
     }.foreach { w =>
@@ -927,6 +974,11 @@ private[deploy] class Master(
     }
 
     val workerAddress = worker.endpoint.address
+
+    /**
+     * 如果addressToWorker中包含地址相同的WorkerInfo，并且此WorkerInfo的状态为UNKNOWN，那么调用removeWorker方法，
+     * 移除此WorkerInfo的相关状态，否则返回false。
+     */
     if (addressToWorker.contains(workerAddress)) {
       val oldWorker = addressToWorker(workerAddress)
       if (oldWorker.state == WorkerState.UNKNOWN) {
@@ -939,6 +991,10 @@ private[deploy] class Master(
       }
     }
 
+    /**
+     * 如果addressToWorker中包含地址相同的WorkerInfo，并且此WorkerInfo的状态为UNKNOWN，那么调用removeWorker方法，
+     * 移除此WorkerInfo的相关状态，否则返回false。
+     */
     workers += worker
     idToWorker(worker.id) = worker
     addressToWorker(workerAddress) = worker
@@ -1181,10 +1237,18 @@ private[deploy] class Master(
     new DriverInfo(now, newDriverId(date), desc, date)
   }
 
+  /**
+   * Master的launchDriver方法用于运行Driver
+   *
+   * @param worker
+   * @param driver
+   */
   private def launchDriver(worker: WorkerInfo, driver: DriverInfo) {
     logInfo("Launching driver " + driver.id + " on worker " + worker.id)
+    // 在WorkerInfo和DriverInfo之间建立关系
     worker.addDriver(driver)
     driver.worker = Some(worker)
+    // 向Worker发送LaunchDriver消息，Worker接收到LaunchDriver消息后将运行Driver
     worker.endpoint.send(LaunchDriver(driver.id, driver.desc))
     driver.state = DriverState.RUNNING
   }
