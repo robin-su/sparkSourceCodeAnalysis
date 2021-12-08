@@ -41,6 +41,22 @@ import org.apache.spark.metrics.MetricsSystem
 import org.apache.spark.rpc._
 import org.apache.spark.util.{SparkUncaughtExceptionHandler, ThreadUtils, Utils}
 
+/**
+ * Worker是Spark在local-cluster部署模式和Standalone部署模式中对工作节点的资源和Executor进行管理的服务。Worker一方面向Master汇报自
+ * 身所管理的资源信息，一方面接收Master的命令运行Driver或者为Application运行Executor。同一个机器上可以同时部署多个Worker服务，一个
+ * Worker也可以启动多个Executor。当Executor完成后，Worker将回收Executor使用的资源。
+ *
+ * @param rpcEnv 即RpcEnv
+ * @param webUiPort 参数指定的WebUI的端口。
+ * @param cores 内核数
+ * @param memory 内存大小。
+ * @param masterRpcAddresses Master的RpcEnv地址（即RpcAddress）的数组。由于一个集群为了可靠性和容错，需要多个Master节点，因此用数组来存储它们的RpcEnv地址。
+ * @param endpointName Worker注册到RpcEnv的名称。
+ * @param workDirPath  字符串表示的Worker的工作目录。
+ * @param conf 即SparkConf。
+ * @param securityMgr 即SecurityManager。
+ * @param externalShuffleServiceSupplier
+ */
 private[deploy] class Worker(
     // 定义worker需要的参数
     override val rpcEnv: RpcEnv,
@@ -63,13 +79,13 @@ private[deploy] class Worker(
   assert (port > 0)
 
   // A scheduled executor used to send messages at the specified time.
-//  定时发送消息的调度器
+//  用于发送消息的调度执行器（ScheduledThreadPoolExecutor）。forwordMessageScheduler只能调度执行一个线程，执行的线程以worker-forward-message-scheduler作为名称。
   private val forwordMessageScheduler =
     ThreadUtils.newDaemonSingleThreadScheduledExecutor("worker-forward-message-scheduler")
 
   // A separated thread to clean up the workDir and the directories of finished applications.
   // Used to provide the implicit parameter of `Future` methods.
-  // 清理workerDir和已完成任务的子线程
+  // 通过Executors的newSingleThreadExecutor方法创建的线程执行器，用于清理Worker的工作目录。由cleanupThreadExecutor执行的线程以worker-cleanup-thread作为名称
   private val cleanupThreadExecutor = ExecutionContext.fromExecutorService(
     ThreadUtils.newDaemonSingleThreadExecutor("worker-cleanup-thread"))
 
@@ -77,7 +93,7 @@ private[deploy] class Worker(
   // 获取时间作为worker及executor的ID
   private def createDateFormat = new SimpleDateFormat("yyyyMMddHHmmss", Locale.US)
   // Send a heartbeat every (heartbeat timeout) / 4 milliseconds
-//  每15秒发送一次心跳报告
+//  向Master发送心跳的时间间隔，是spark.worker.timeout属性值的1/4，默认为15秒。
   private val HEARTBEAT_MILLIS = conf.getLong("spark.worker.timeout", 60) * 1000 / 4
 
   // Model retries to connect to the master, after Hadoop's model.
@@ -85,30 +101,33 @@ private[deploy] class Worker(
   // Afterwards, the next 10 attempts are between 30 and 90 seconds.
   // A bit of randomness is introduced so that not all of the workers attempt to reconnect at
   // the same time.
-  // 连接master失败后的重连设置
-  // 前5次重试间隔5-15秒之间,后面10次间隔在30-90秒之间
-  // 引入了随机性,所以基本不存多个worker在同一时间重连
-  // 后10次重连的开始数
+//  此常量固定为6，代表连接Master的前六次尝试。
   private val INITIAL_REGISTRATION_RETRIES = 6
-  // 总重试15次
+  // 此常量固定为16，代表连接Master最多有16次尝试。
   private val TOTAL_REGISTRATION_RETRIES = INITIAL_REGISTRATION_RETRIES + 10
-  // 重试最低间隔0.5秒
+  // 此常量固定为0.500，是为了确保尝试的时间间隔不至于过小的下边界。
   private val FUZZ_MULTIPLIER_INTERVAL_LOWER_BOUND = 0.500
+  /**
+   * :0～1范围的随机数与FUZZ_MULTIP-LIER_INTERVAL_LOWER_BOUND的和，所以REGISTRATION_RETRY_FUZZ_MU-LTIPLIER的真实范围在0.5～1.5
+   *  之间。加入随机数是为了避免各个Worker在同一时间发送心跳。
+   */
   private val REGISTRATION_RETRY_FUZZ_MULTIPLIER = {
     val randomNumberGenerator = new Random(UUID.randomUUID.getMostSignificantBits)
     // 每次重连间隔+0.5秒 + 随机数
     randomNumberGenerator.nextDouble + FUZZ_MULTIPLIER_INTERVAL_LOWER_BOUND
   }
-  // 前5次的重连间隔时间5-15秒
+  // 代表前六次尝试的时间间隔。INITIAL_REGISTRATION_RETRY_INTERVAL_SECONDS取10和REGIST-RATION_RETRY_FUZZ_MULTIPLIER
+  // 乘积的最近整数，因此这六次尝试的时间间隔在5～15s之间。
   private val INITIAL_REGISTRATION_RETRY_INTERVAL_SECONDS = (math.round(10 *
     REGISTRATION_RETRY_FUZZ_MULTIPLIER))
-//  后10次的重连间隔 60 -90 秒
+//   代表最后十次尝试的时间间隔。PROLONGED_REGISTRATION_RETRY_INTERVAL_SECONDS取60和REGISTRATION_RETRY_FUZZ_MULTIPLIER乘积的
+//   最近整数，因此最后十次尝试的时间间隔在30～90s之间。
   private val PROLONGED_REGISTRATION_RETRY_INTERVAL_SECONDS = (math.round(60
     * REGISTRATION_RETRY_FUZZ_MULTIPLIER))
-  // 默认不清理,对应上面的cleanupThreadExecutor
+  // 是否对旧的Application产生的文件夹及文件进行清理。可通过spark.worker.cleanup.enabled属性配置，默认为false。
   private val CLEANUP_ENABLED = conf.getBoolean("spark.worker.cleanup.enabled", false)
   // How often worker will clean up old app folders
-  // 清理设置,清理文件时间,默认半小时
+  // 对旧的Application产生的文件夹及文件进行清理的时间间隔。可通过spark.worker.cleanup.interval属性配置，默认为1800秒。
   private val CLEANUP_INTERVAL_MILLIS =
     conf.getLong("spark.worker.cleanup.interval", 60 * 30) * 1000
   // TTL for app folders/data;  after TTL expires it will be cleaned up
@@ -121,6 +140,9 @@ private[deploy] class Worker(
     conf.getBoolean("spark.storage.cleanupFilesAfterExecutorExit", true)
   // 是否开启测试
   private val testing: Boolean = sys.props.contains("spark.testing")
+  /**
+   * Master的RpcEndpointRef。
+   */
   private var master: Option[RpcEndpointRef] = None
 
   /**
@@ -139,16 +161,31 @@ private[deploy] class Worker(
   // 断开后重连的master地址
   // 一般是重连RPC中注册的master地址,但master重启或选主后的新的地址可能不在RPC中
   private var masterAddressToConnect: Option[RpcAddress] = None
+  /**
+   * 处于激活（ALIVE）状态的Master的URL
+   */
   private var activeMasterUrl: String = ""
+  /**
+   * 处于激活（ALIVE）状态的Master的WebUI的URL。
+   */
   private[worker] var activeMasterWebUiUrl : String = ""
+  /***
+   * Worker的WebUI的URL。
+   */
   private var workerWebUiUrl: String = ""
-  // 通过RPC获取的workerUri信息
+  // Worker的URL，格式为spark://$name@${ host}:${ port}。
   private val workerUri = RpcEndpointAddress(rpcEnv.address, endpointName).toString
+  /**
+   * 标记Worker是否已经注册到Master。
+   */
   private var registered = false
+  /**
+   * 标记Worker是否已经连接到Master。
+   */
   private var connected = false
   // worker的ID,就是注册host和port的系统时间
   private val workerId = generateWorkerId()
-  // spark目录
+  // 环境变量SPARK_HOME的值。
   private val sparkHome =
     if (testing) {
       assert(sys.props.contains("spark.test.home"), "spark.test.home is not set!")
@@ -157,18 +194,31 @@ private[deploy] class Worker(
       new File(sys.env.get("SPARK_HOME").getOrElse("."))
     }
 
+  /**
+   * 由java.io.File表示的Worker的工作目录。
+   */
   var workDir: File = null
-  // executor完成后的信息
+  // 已经完成的Executor的身份标识与ExecutorRunner之间的映射关系。
   val finishedExecutors = new LinkedHashMap[String, ExecutorRunner]
-  // driver信息
+  /**
+   * Driver的身份标识与DriverRunner之间的映射关系。
+   */
   val drivers = new HashMap[String, DriverRunner]
-  // executors信息
+  /**
+   * Executor的身份标识与ExecutorRunner之间的映射关系。
+   */
   val executors = new HashMap[String, ExecutorRunner]
-  // driver执行完的信息
+  /**
+   * 已经完成的Driver的身份标识与DriverRunner之间的映射关系。
+   */
   val finishedDrivers = new LinkedHashMap[String, DriverRunner]
-  // app存放目录
+  /**
+   * Application的ID与对应的目录集合之间的映射关系。
+   */
   val appDirectories = new HashMap[String, Seq[String]]
-  // app提交完成的信息
+  /**
+   * 已经完成的Application的ID的集合。
+   */
   val finishedApps = new HashSet[String]
 
 //  webUI中保存executor数量,默认1000
@@ -179,28 +229,48 @@ private[deploy] class Worker(
     WorkerWebUI.DEFAULT_RETAINED_DRIVERS)
 
   // The shuffle service is not actually started unless configured.
-  //shuffle服务,需要配置才会启用,默认关闭
+  /**
+   * 外部的Shuffle服务。在6.9节曾经简单介绍过外部Shuffle服务的客户端ExternalShuffleClient。这里则是外部Shuffle服务的服务端实现类
+   * External-ShuffleService。这里虽然创建了ExternalShuffleService，但是只有配置了外部的Shuffle服务时，才会启动它
+   */
   private val shuffleService = if (externalShuffleServiceSupplier != null) {
     externalShuffleServiceSupplier.get()
   } else {
     new ExternalShuffleService(conf, securityMgr)
   }
 
+  /**
+   * Worker的公共地址，如果设置了环境变量SPARK_PUBLIC_DNS，则为环境变量SPARK_PUBLIC_DNS的值，否则为host。
+   */
   private val publicAddress = {
     val envVar = conf.getenv("SPARK_PUBLIC_DNS")
     if (envVar != null) envVar else host
   }
+  /**
+   * Worker的WebUI，类型为WebUI的子类WorkerWebUI。
+   */
   private var webUi: WorkerWebUI = null
-
+  /**
+   * 连接尝试次数的计数器。
+   */
   private var connectionAttemptCount = 0
-//  向metrics注册,metrics系统后续解析
+  /**
+   * 实例名为worker的MetricsSystem，即Worker的度量系统。
+   */
   private val metricsSystem = MetricsSystem.createMetricsSystem("worker", conf, securityMgr)
+  /**
+   * 类型为WorkerSource，是有关Worker的度量来源。
+   */
   private val workerSource = new WorkerSource(this)
 //  是否启用反向代理,默认关闭
   val reverseProxy = conf.getBoolean("spark.ui.reverseProxy", false)
-//  master注册的备用地址
+  /**
+   * 由于Worker向Master进行注册的过程是异步的，此变量保存线程返回的java.util.concurrent.Future。
+   */
   private var registerMasterFutures: Array[JFuture[_]] = null
-//  注册的时间记录
+  /**
+   * Worker向Master进行注册重试的定时器。
+   */
   private var registrationRetryTimer: Option[JScheduledFuture[_]] = None
 
   // A thread pool for registering with masters. Because registering with a master is a blocking
@@ -211,11 +281,27 @@ private[deploy] class Worker(
     "worker-register-master-threadpool",
     masterRpcAddresses.length // Make sure we can register with all masters at the same time
   )
-
+  /**
+   * 当前Worker已经使用的内核数。Worker提供了coresFree方法返回cores属性和coresUsed的差值，作为空闲的内核数。
+   */
   var coresUsed = 0
+  /**
+   * 当前Worker已经使用的内存大小。Worker提供了memoryFree方法返回memory属性和memoryUsed的差值，作为空闲的内存大小。
+   */
   var memoryUsed = 0
 
+  /**
+   * 空闲的CPU核心数
+   *
+   * @return
+   */
   def coresFree: Int = cores - coresUsed
+
+  /**
+   * 空闲的内存数
+   *
+   * @return
+   */
   def memoryFree: Int = memory - memoryUsed
 
   private def createWorkDir() {
@@ -868,8 +954,10 @@ private[deploy] object Worker extends Logging {
       conf: SparkConf = new SparkConf): RpcEnv = {
 
     // The LocalSparkCluster runs multiple local sparkWorkerX RPC Environments
-    // 在spark集群上运行多个worker的RPC环境
-    // 这的名字其实就是最开始设置的SYSTEM_NAME+实例数,默认单实例这里就是"sparkWorker"
+    /**
+     * 生成Worker的RpcEnv的名称。生成规则为SYSTEM_NAME后跟Worker号。由于常量SYSTEM_NAME的值为sparkWorker，所以Worker的RpcEnv的名称
+     * 将会是spark-Worker0、sparkWorker1等。
+     */
     val systemName = SYSTEM_NAME + workerNumber.map(_.toString).getOrElse("")
     // 初始化securityManager,后续另外解析securityManager组件
     val securityMgr = new SecurityManager(conf)
