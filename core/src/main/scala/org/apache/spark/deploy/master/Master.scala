@@ -276,6 +276,7 @@ private[deploy] class Master(
   }
 
   /**
+   *
    * electedLeader方法只是向Master自身发送了ElectedLeader消息。
    * Master的receive方法中实现了对ElectedLeader消息的处理
    */
@@ -283,6 +284,9 @@ private[deploy] class Master(
     self.send(ElectedLeader)
   }
 
+  /**
+   * revokedLeadership方法只是向Master自身发送了RevokedLeadership消息。
+   */
   override def revokedLeadership() {
     self.send(RevokedLeadership)
   }
@@ -385,21 +389,29 @@ private[deploy] class Master(
       }
 
     case ExecutorStateChanged(appId, execId, state, message, exitStatus) =>
+      // 根据appId获取ApplicationInfo，
       val execOption = idToApp.get(appId).flatMap(app => app.executors.get(execId))
       execOption match {
         case Some(exec) =>
+          // 根据appId获取ApplicationInfo，
           val appInfo = idToApp(appId)
+          // 获取对应Executor的状态信息
           val oldState = exec.state
+          // 将状态设置为state
           exec.state = state
 
+          // 如果新的状态是RUNNING，旧的状态是LAUNCHING，则从RUNNING -> LAUNCHING是非法的
           if (state == ExecutorState.RUNNING) {
             assert(oldState == ExecutorState.LAUNCHING,
               s"executor $execId state transfer from $oldState to RUNNING is illegal")
+            // 将重拾次数重制为0
             appInfo.resetRetryCount()
           }
 
+          // 向Driver发送ExecutorUpdated消息
           exec.application.driver.send(ExecutorUpdated(execId, state, message, exitStatus, false))
 
+          //如果状态为：KILLED, FAILED, LOST, EXITED中的一种，则移除Executor
           if (ExecutorState.isFinished(state)) {
             // Remove this executor from the worker and app
             logInfo(s"Removing executor ${exec.fullId} because it is $state")
@@ -408,12 +420,16 @@ private[deploy] class Master(
             if (!appInfo.isFinished) {
               appInfo.removeExecutor(exec)
             }
+            // 从worker中移除Executor
             exec.worker.removeExecutor(exec)
 
+            //  exitStatus == Some(0) 表示正常退出
             val normalExit = exitStatus == Some(0)
             // Only retry certain number of times so we don't go into an infinite loop.
             // Important note: this code path is not exercised by tests, so be very careful when
             // changing this `if` condition.
+            // 如果是非正常退出，并且重试次数已经超过了MAX_EXECUTOR_RETRIES，那么Executor所属的Application在没有任何Executor
+            // 处于RUNNING状态时将被彻底移除。
             if (!normalExit
                 && appInfo.incrementRetryCount() >= MAX_EXECUTOR_RETRIES
                 && MAX_EXECUTOR_RETRIES >= 0) { // < 0 disables this application-killing path
@@ -1003,18 +1019,32 @@ private[deploy] class Master(
 
   private def removeWorker(worker: WorkerInfo, msg: String) {
     logInfo("Removing worker " + worker.id + " on " + worker.host + ":" + worker.port)
+    // 将worker的状态设置为DEAD
     worker.setState(WorkerState.DEAD)
+    // 移除worker.id
     idToWorker -= worker.id
+    //移除Worker Rpc address
     addressToWorker -= worker.endpoint.address
 
+    // 遍历worker中所有的executor
     for (exec <- worker.executors.values) {
       logInfo("Telling app of lost executor: " + exec.id)
+      // 向Driver发送ExecutorUpdated消息
       exec.application.driver.send(ExecutorUpdated(
         exec.id, ExecutorState.LOST, Some("worker lost"), None, workerLost = true))
+      // 将execute的状态改成LOST
       exec.state = ExecutorState.LOST
+      // 移除executor
       exec.application.removeExecutor(exec)
     }
+
+    /**
+     * 遍历所有的Driver
+     */
     for (driver <- worker.drivers.values) {
+      /**
+       * 如果Driver是被监管的，则调用relaunchDriver方法重新调度运行Driver，否则调用removeDriver方法移除Driver的相关信息和状态。
+       */
       if (driver.desc.supervise) {
         logInfo(s"Re-launching ${driver.id}")
         relaunchDriver(driver)
@@ -1027,9 +1057,15 @@ private[deploy] class Master(
     apps.filterNot(completedApps.contains(_)).foreach { app =>
       app.driver.send(WorkerRemoved(worker.id, worker.host, msg))
     }
+    //调用持久化引擎的removeWorker方法移除WorkerInfo的持久化数据。
     persistenceEngine.removeWorker(worker)
   }
 
+  /**
+   * 重新调度运行指定的Driver
+   *
+   * @param driver
+   */
   private def relaunchDriver(driver: DriverInfo) {
     // We must setup a new driver with a new driver id here, because the original driver may
     // be still running. Consider this scenario: a worker is network partitioned with master,
@@ -1038,10 +1074,14 @@ private[deploy] class Master(
     // can not distinguish the statusUpdate of the original driver and the newly relaunched one,
     // for example, when DriverStateChanged(driverID1, KILLED) arrives at master, master will
     // remove driverID1, so the newly relaunched driver disappears too. See SPARK-19900 for details.
+    /**
+     * 将DriverInfo的worker属性置为None，以表示Driver提交的应用没有被任何Worker处理。
+     */
     removeDriver(driver.id, DriverState.RELAUNCHING, None)
     val newDriver = createDriver(driver.desc)
     persistenceEngine.addDriver(newDriver)
     drivers.add(newDriver)
+    // 将DriverInfo放入所有等待调度的Driver的集合waitingDrivers中。
     waitingDrivers += newDriver
 
     schedule()
@@ -1080,10 +1120,17 @@ private[deploy] class Master(
     removeApplication(app, ApplicationState.FINISHED)
   }
 
+  /**
+   * 移除Master中缓存的Application及Application相关的Driver信息
+   * @param app
+   * @param state
+   */
   def removeApplication(app: ApplicationInfo, state: ApplicationState.Value) {
     if (apps.contains(app)) {
       logInfo("Removing app " + app.id)
+      // 移除Application信息
       apps -= app
+      // 移除Application id
       idToApp -= app.id
       endpointToApp -= app.driver
       addressToApp -= app.driver.address
@@ -1095,20 +1142,40 @@ private[deploy] class Master(
         }
         completedApps.trimStart(toRemove)
       }
+
+      /**
+       * 将ApplicationInfo添加到数组缓冲completedApps中。
+       */
       completedApps += app // Remember it in our history
       waitingApps -= app
 
+      /**
+       * 遍历分配给Application的Executor，调用killExecutor方法“杀死”。
+       */
       for (exec <- app.executors.values) {
         killExecutor(exec)
       }
       app.markFinished(state)
+
+      /**
+       * 向DriverEndpoint发送ApplicationRemoved消息，告诉Driver驱动的Application已经被移除。
+       */
       if (state != ApplicationState.FINISHED) {
         app.driver.send(ApplicationRemoved(state.toString))
       }
+
+      /**
+       * 对ApplicationInfo去持久化。
+       */
       persistenceEngine.removeApplication(app)
+
+      /**
+       * 调用schedule方法进行资源调度。
+       */
       schedule()
 
       // Tell all workers that the application has finished, so they can clean up any app state.
+      // 向每个Worker发送ApplicationFinished消息，以告知Application已完成。
       workers.foreach { w =>
         w.endpoint.send(ApplicationFinished(app.id))
       }
@@ -1128,6 +1195,10 @@ private[deploy] class Master(
     idToApp.get(appId) match {
       case Some(appInfo) =>
         logInfo(s"Application $appId requested to set total executors to $requestedTotal.")
+
+        /**
+         * handleRequestExecutors方法首先更改ApplicationInfo的Executor总数，然后调用schedule方法进行资源调度。
+         */
         appInfo.executorLimit = requestedTotal
         schedule()
         true
@@ -1257,19 +1328,29 @@ private[deploy] class Master(
       driverId: String,
       finalState: DriverState,
       exception: Option[Exception]) {
+    // 根据driverId获取DriverInfo
     drivers.find(d => d.id == driverId) match {
       case Some(driver) =>
         logInfo(s"Removing driver: $driverId")
+        // 从drivers中移除找到DriverInfo
         drivers -= driver
+        // 如果已经完成的DriverInfo的集合completedDrivers中的元素数量大于等于RETAI-NED_DRIVERS，
+        // 那么移除completedDrivers中开头的一些DriverInfo。
         if (completedDrivers.size >= RETAINED_DRIVERS) {
           val toRemove = math.max(RETAINED_DRIVERS / 10, 1)
           completedDrivers.trimStart(toRemove)
         }
+        //将找到的DriverInfo放入completedDrivers集合中
         completedDrivers += driver
+        // 移除DriverInfo的持久化数据
         persistenceEngine.removeDriver(driver)
+        // 将Driver的状态设置为finalState
         driver.state = finalState
+        // 将exception的设置为exception
         driver.exception = exception
+        // 移除所有的
         driver.worker.foreach(w => w.removeDriver(driver))
+        // 由于腾出了Driver占用的资源，所以对其他Application和Driver进行调度
         schedule()
       case None =>
         logWarning(s"Asked to remove unknown driver: $driverId")
