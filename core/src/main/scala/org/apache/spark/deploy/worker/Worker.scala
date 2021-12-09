@@ -46,6 +46,26 @@ import org.apache.spark.util.{SparkUncaughtExceptionHandler, ThreadUtils, Utils}
  * 身所管理的资源信息，一方面接收Master的命令运行Driver或者为Application运行Executor。同一个机器上可以同时部署多个Worker服务，一个
  * Worker也可以启动多个Executor。当Executor完成后，Worker将回收Executor使用的资源。
  *
+ * Worker启动注册流程：
+ *
+ * 1) Worker刚刚启动时，由于不知道哪个Master是ALIVE的，所以向所有Master发送RegisterWorker消息（此消息将携带Worker的ID、host、port、
+ * 内核数、内存大小等信息）。向状态为STANDBY的Master发送消息将接收到MasterInStandby消息，Worker由此知道这个Master不“管事”。如果Worker
+ * 向ALIVE状态的Master重复注册或者注册失败，将会收到RegisterWorkerFailed消息，Worker发现自己还未注册成功时将退出。
+ *
+ * 2) 状态为ALIVE的Master接收到RegisterWorker消息后，将根据Register-Worker消息携带的信息构建出WorkerInfo，并将WorkerInfo添加到
+ * workers、idToWorker、addressToWorker等缓存中，最后调用PersistenceEngine的addWorker方法将WorkerInfo持久化。
+ *
+ * 3）状态为ALIVE的Master在Worker注册成功后，向Worker回复Registered-Worker消息。
+ *
+ * 4）状态为ALIVE的Master在向Worker回复RegisteredWorker消息后，将调用schedule对Driver及Executor进行资源调度。
+ *
+ * 5）Worker接收到Master回复的RegisteredWorker消息后，将调用changeMaster方法修改激活的Master的信息。
+ *
+ * 6）Worker调用changeMaster方法后，将向forwordMessageScheduler提交向Worker自身发送SendHeartbeat消息的定时任务。
+ *
+ * 7）Worker接收到SendHeartbeat消息后，将向Master发送心跳（Heartbeat）消息。Master接收到Heartbeat消息后，将更新WorkerInfo的
+ * 最后心跳时间（lastHeartbeat）。
+ *
  * @param rpcEnv 即RpcEnv
  * @param webUiPort 参数指定的WebUI的端口。
  * @param cores 内核数
@@ -304,6 +324,9 @@ private[deploy] class Worker(
    */
   def memoryFree: Int = memory - memoryUsed
 
+  /**
+   * 创建worker工作目录
+   */
   private def createWorkDir() {
 //    如果没有设置workDir,这个目录默认在spark目录下创建
     workDir = Option(workDirPath).map(new File(_)).getOrElse(new File(sparkHome, "work"))
@@ -332,11 +355,11 @@ private[deploy] class Worker(
       host, port, cores, Utils.megabytesToString(memory)))
     logInfo(s"Running Spark version ${org.apache.spark.SPARK_VERSION}")
     logInfo("Spark home: " + sparkHome)
-    // 调用方法创建WorkerDir
+    // 创建worker的工作目录
     createWorkDir()
-    // 启动shuffle服务
+    // 如果配置了外部的Shuffle服务，那么启动ShuffleService
     startExternalShuffleService()
-    // 初始化webUI
+    // 初始化webUI.为其绑定端口
     webUi = new WorkerWebUI(this, workDir, webUiPort)
     // web设置http服务器
     webUi.bind()
@@ -346,6 +369,9 @@ private[deploy] class Worker(
     // 向master注册worker
     registerWithMaster()
 
+    /**
+     * 将workerSource注册到metricsSystem，然后启动metricsSystem，最后将metrics-System的ServletContextHandler添加到WorkerWebUI。
+     */
     metricsSystem.registerSource(workerSource)
     metricsSystem.start()
     // Attach the worker metrics servlet handler to the web ui after the metrics system is started.
@@ -374,6 +400,12 @@ private[deploy] class Worker(
     cancelLastRegistrationRetry()
   }
 
+  /**
+   * tryRegisterAllMasters方法实际上是遍历masterRpcAddresses中的每个Master的RPC地址，然后向registerMasterThreadPool
+   * 提交向Master注册Worker的任务.
+   *
+   * @return
+   */
   private def tryRegisterAllMasters(): Array[JFuture[_]] = {
     masterRpcAddresses.map { masterAddress =>
       registerMasterThreadPool.submit(new Runnable {
@@ -484,14 +516,22 @@ private[deploy] class Worker(
     registrationRetryTimer = None
   }
 
+  /**
+   * 在启动Worker的过程中需要调用registerWithMaster方法向Master注册Worker
+   */
   private def registerWithMaster() {
     // onDisconnected may be triggered multiple times, so don't attempt registration
     // if there are outstanding registration attempts scheduled.
     registrationRetryTimer match {
       case None =>
         registered = false
-        registerMasterFutures = tryRegisterAllMasters()
+        registerMasterFutures = tryRegisterAllMasters() //  向所有的Master注册Worker,只有处于领导状态的Master来处理Worker的注册。
         connectionAttemptCount = 0
+
+        /**
+         * 创建定时任务registrationRetryTimer，按照常量INITIAL_REGISTRATION_RETRY_INTERVAL_SECONDS指定的间隔向Worker自身发送
+         * ReregisterWithMaster消息。在Worker的receive方法中使用了重载的reregisterWithMaster方法来处理ReregisterWithMaster消息
+         */
         registrationRetryTimer = Some(forwordMessageScheduler.scheduleAtFixedRate(
           new Runnable {
             override def run(): Unit = Utils.tryLogNonFatalError {
@@ -531,19 +571,32 @@ private[deploy] class Worker(
 
   private def handleRegisterResponse(msg: RegisterWorkerResponse): Unit = synchronized {
     msg match {
+      /**
+       * 处理RegisteredWorker消息。如果Master回复了此消息，说明Worker已经成功在Master上注册
+       */
       case RegisteredWorker(masterRef, masterWebUiUrl, masterAddress) =>
         if (preferConfiguredMasterAddress) {
           logInfo("Successfully registered with master " + masterAddress.toSparkURL)
         } else {
           logInfo("Successfully registered with master " + masterRef.address.toSparkURL)
         }
+        // 将registered设置为true。
         registered = true
+        //调用changeMaster方法修改激活的Master的信息。changeMaster方法还调用cancelLastRegistrationRetry方法取消注册尝试
         changeMaster(masterRef, masterWebUiUrl, masterAddress)
+        /**
+         * 向forwordMessageScheduler提交以HEARTBEAT_MILLIS作为间隔向Worker自身发送SendHeartbeat消息的定时任务。
+         */
         forwordMessageScheduler.scheduleAtFixedRate(new Runnable {
           override def run(): Unit = Utils.tryLogNonFatalError {
             self.send(SendHeartbeat)
           }
         }, 0, HEARTBEAT_MILLIS, TimeUnit.MILLISECONDS)
+
+        /**
+         * 如果允许清理工作目录（即CLEANUP_ENABLED为true），向forwordMessageScheduler提交以CLEANUP_INTERVAL_MILLIS作为间隔向
+         * Worker自身发送WorkDirCleanup消息的定时任务。
+         */
         if (CLEANUP_ENABLED) {
           logInfo(
             s"Worker cleanup enabled; old application directories will be deleted in: $workDir")
@@ -557,14 +610,24 @@ private[deploy] class Worker(
         val execs = executors.values.map { e =>
           new ExecutorDescription(e.appId, e.execId, e.cores, e.state)
         }
+        /**
+         * 向Master发送WorkerLatestState消息（此消息携带Worker的身份标识、Worker节点的所有Executor的描述信息、
+         * 调度到当前Worker的所有Driver的身份标识）
+         */
         masterRef.send(WorkerLatestState(workerId, execs.toList, drivers.keys.toSeq))
 
+      /**
+       * 如果Master回复了此消息，说明Worker在Master上注册失败了。如果Worker还未向任何Master节点注册成功，那么退出Worker进程。
+       */
       case RegisterWorkerFailed(message) =>
         if (!registered) {
           logError("Worker registration failed: " + message)
           System.exit(1)
         }
 
+      /**
+       * 处理MasterInStandby消息。如果Master回复了此消息，说明Master处于Standby的状态，并不是领导身份，此时Worker不作任何处理。
+       */
       case MasterInStandby =>
         // Ignore. Master not yet ready.
     }
@@ -574,7 +637,13 @@ private[deploy] class Worker(
     case msg: RegisterWorkerResponse =>
       handleRegisterResponse(msg)
 
+    /**
+     * 当Worker向Master注册成功后会接收到Master回复的RegisteredWorker消息，Worker使用handleRegisterResponse方法处理
+     * RegisteredWorker消息时，将会向forwordMessageScheduler提交以HEARTBEAT_MILLIS作为间隔向Worker自身发送SendHeartbeat
+     * 消息的定时任务。Worker的receive方法实现了对SendHeartbeat消息的处理
+     */
     case SendHeartbeat =>
+      // 向Master发送Heartbeat消息
       if (connected) { sendToMaster(Heartbeat(workerId, self)) }
 
     case WorkDirCleanup =>
@@ -617,6 +686,10 @@ private[deploy] class Worker(
         map(e => new ExecutorDescription(e.appId, e.execId, e.cores, e.state))
       masterRef.send(WorkerSchedulerStateResponse(workerId, execs.toList, drivers.keys.toSeq))
 
+    /**
+     * Master在处理Heartbeat消息时有可能向Worker发送ReconnectWorker消息，Worker的receive方法接收到ReconnectWorker消息后只是再次
+     * 调用了registerWithMaster方法向Master注册Worker
+     */
     case ReconnectWorker(masterUrl) =>
       logInfo(s"Master with url $masterUrl requested this worker to reconnect.")
       registerWithMaster()
@@ -736,6 +809,9 @@ private[deploy] class Worker(
     case driverStateChanged @ DriverStateChanged(driverId, state, exception) =>
       handleDriverStateChanged(driverStateChanged)
 
+    /**
+     * reregisterWithMaster方法用于在Worker的registered为false时，重新向Master注册
+     */
     case ReregisterWithMaster =>
       reregisterWithMaster()
 
@@ -797,6 +873,7 @@ private[deploy] class Worker(
     master match {
       case Some(masterRef) => masterRef.send(message)
       case None =>
+        // 忽略Worker还未与Master建立连接时不做任何处理，只打印日志
         logWarning(
           s"Dropping $message because the connection to master has not yet been established")
     }
@@ -901,6 +978,11 @@ private[deploy] object Worker extends Logging {
   private val SSL_NODE_LOCAL_CONFIG_PATTERN = """\-Dspark\.ssl\.useNodeLocalConf\=(.+)""".r
 
 //  参数:--webui-port 8081 spark://host:7077
+
+  /**
+   * Worker当成一个单独的jvm进程进行启动
+   * @param argStrings
+   */
   def main(argStrings: Array[String]) {
     Thread.setDefaultUncaughtExceptionHandler(new SparkUncaughtExceptionHandler(
       exitOnUncaughtException = false))
@@ -909,8 +991,14 @@ private[deploy] object Worker extends Logging {
     val conf = new SparkConf
 //    加载参数和配置进行解析,得到启动RPC和worker需要的参数
     // worker-host、worker-port、webUI-port、cores、memory、master、workerDir、properties
+    /**
+     * 创建WorkerArguments以对执行main函数的参数进行解析，并将Spark属性配置文件中以spark．开头的属性保存到SparkConf。
+     */
     val args = new WorkerArguments(argStrings, conf)
     // 启动RPC和work终端
+    /**
+     * 调用Worker伴生对象的startRpcEnvAndEndpoint方法创建并启动Worker对象。
+     */
     val rpcEnv = startRpcEnvAndEndpoint(args.host, args.port, args.webUiPort, args.cores,
       args.memory, args.masters, args.workDir, conf = conf)
     // With external shuffle service enabled, if we request to launch multiple workers on one host,
@@ -942,6 +1030,7 @@ private[deploy] object Worker extends Logging {
   // masterUrls=Array(spark://192.168.2.1:7077)
   // workerDir=null
   // properties=null
+
   def startRpcEnvAndEndpoint(
       host: String,
       port: Int,
