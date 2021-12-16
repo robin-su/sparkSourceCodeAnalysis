@@ -126,7 +126,10 @@ private[deploy] class ExecutorRunner(
     }
   }
 
-  /** Replace variables such as {{EXECUTOR_ID}} and {{CORES}} in a command argument passed to us */
+  /**
+   * 等待获取进程的退出状态，一旦收到退出状态，则向Worker发送Executor-StateChanged消息。
+   * Replace variables such as {{EXECUTOR_ID}} and {{CORES}} in a command argument passed to us
+   */
   private[worker] def substituteVariables(argument: String): String = argument match {
     case "{{WORKER_URL}}" => workerUrl
     case "{{EXECUTOR_ID}}" => execId.toString
@@ -146,13 +149,20 @@ private[deploy] class ExecutorRunner(
         Utils.substituteAppNExecIds(_, appId, execId.toString)
       }
       val subsCommand = appDesc.command.copy(javaOpts = subsOpts)
+      /**
+       *构造ProcessBuilder，进程命令将由ApplicationDescription的command属性决定
+       */
       val builder = CommandUtils.buildProcessBuilder(subsCommand, new SecurityManager(conf),
         memory, sparkHome.getAbsolutePath, substituteVariables)
       val command = builder.command()
       val formattedCommand = command.asScala.mkString("\"", "\" \"", "\"")
       logInfo(s"Launch command: $formattedCommand")
-
+      // 将executorDir设置为ProcessBuilder执行目录
       builder.directory(executorDir)
+
+      /**
+       * 为ProcessBuilder设置环境变量。
+       */
       builder.environment.put("SPARK_EXECUTOR_DIRS", appLocalDirs.mkString(File.pathSeparator))
       // In case we are running this from within the Spark Shell, avoid creating a "scala"
       // parent process for the executor command
@@ -167,11 +177,14 @@ private[deploy] class ExecutorRunner(
         }
       builder.environment.put("SPARK_LOG_URL_STDERR", s"${baseUrl}stderr")
       builder.environment.put("SPARK_LOG_URL_STDOUT", s"${baseUrl}stdout")
-
+//      一旦执行了builder.start()，就会发现此时已经产生了一个新的进程
       process = builder.start()
       val header = "Spark Executor Command: %s\n%s\n\n".format(
         formattedCommand, "=" * 40)
 
+      /**
+       * 重定向进程的输出流与错误流为executorDir目录下的文件stdout与stderr
+       */
       // Redirect its stdout and stderr to files
       val stdout = new File(executorDir, "stdout")
       stdoutAppender = FileAppender(process.getInputStream, stdout, conf)

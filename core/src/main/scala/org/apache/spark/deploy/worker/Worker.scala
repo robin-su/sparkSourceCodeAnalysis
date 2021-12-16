@@ -80,19 +80,20 @@ import org.apache.spark.util.{SparkUncaughtExceptionHandler, ThreadUtils, Utils}
 private[deploy] class Worker(
     // 定义worker需要的参数
     override val rpcEnv: RpcEnv,
-    webUiPort: Int,
-    cores: Int,
-    memory: Int,
-    masterRpcAddresses: Array[RpcAddress],
-    endpointName: String,
-    workDirPath: String = null,
-    val conf: SparkConf,
-    val securityMgr: SecurityManager,
+    webUiPort: Int,// 参数指定的WebUI的端口
+    cores: Int, //内核数
+    memory: Int, // 内存大小。
+    masterRpcAddresses: Array[RpcAddress], // Master的RpcEnv地址（即RpcAddress）的数组。由于一个集群为了可靠性和容错，需要多个Master节点，因此用数组来存储它们的RpcEnv地址。
+    endpointName: String, // Worker注册到RpcEnv的名称
+    workDirPath: String = null, //字符串表示的Worker的工作目录
+    val conf: SparkConf, //即SparkConf。
+    val securityMgr: SecurityManager, // 即SecurityManager。
     externalShuffleServiceSupplier: Supplier[ExternalShuffleService] = null)
   extends ThreadSafeRpcEndpoint with Logging {
 
-//  获取rpc的host和port
+//  Worker的RpcEnv的host。
   private val host = rpcEnv.address.host
+  // Worker的RpcEnv的端口。
   private val port = rpcEnv.address.port
 
   Utils.checkHost(host)
@@ -250,7 +251,7 @@ private[deploy] class Worker(
 
   // The shuffle service is not actually started unless configured.
   /**
-   * 外部的Shuffle服务。在6.9节曾经简单介绍过外部Shuffle服务的客户端ExternalShuffleClient。这里则是外部Shuffle服务的服务端实现类
+   * 外部的Shuffle服务。外部Shuffle服务的客户端ExternalShuffleClient。这里则是外部Shuffle服务的服务端实现类
    * External-ShuffleService。这里虽然创建了ExternalShuffleService，但是只有配置了外部的Shuffle服务时，才会启动它
    */
   private val shuffleService = if (externalShuffleServiceSupplier != null) {
@@ -407,6 +408,7 @@ private[deploy] class Worker(
    * @return
    */
   private def tryRegisterAllMasters(): Array[JFuture[_]] = {
+    // 遍历所有的masterRpcAddresses
     masterRpcAddresses.map { masterAddress =>
       registerMasterThreadPool.submit(new Runnable {
         override def run(): Unit = {
@@ -678,12 +680,21 @@ private[deploy] class Worker(
           logWarning("Failed to cleanup work dir as executor pool was shutdown")
       }
 
+    /**
+     * 调用changeMaster方法改变激活的Master的相关信息。
+     */
     case MasterChanged(masterRef, masterWebUiUrl) =>
       logInfo("Master has changed, new master is at " + masterRef.address.toSparkURL)
       changeMaster(masterRef, masterWebUiUrl, masterRef.address)
 
+      // 通过遍历executors中的每个ExecutorRunner，利用ExecutorRunner的信息创建ExecutorDescription。
       val execs = executors.values.
         map(e => new ExecutorDescription(e.appId, e.execId, e.cores, e.state))
+
+      /**
+       * 向Master发送WorkerSchedulerStateResponse消息。WorkerSchedulerStateResponse消息携带着Worker的ID、
+       * ExecutorDescription列表、所有Driver的ID等信息。Master接收到WorkerSchedulerStateResponse消息后将更新Worker的调度状态
+       */
       masterRef.send(WorkerSchedulerStateResponse(workerId, execs.toList, drivers.keys.toSeq))
 
     /**
@@ -702,6 +713,7 @@ private[deploy] class Worker(
           logInfo("Asked to launch executor %s/%d for %s".format(appId, execId, appDesc.name))
 
           // Create the executor's working directory
+          // 在Worker的工作目录下创建Executor的工作目录。
           val executorDir = new File(workDir, appId + "/" + execId)
           if (!executorDir.mkdirs()) {
             throw new IOException("Failed to create directory " + executorDir)
@@ -710,6 +722,10 @@ private[deploy] class Worker(
           // Create local dirs for the executor. These are passed to the executor via the
           // SPARK_EXECUTOR_DIRS environment variable, and deleted by the Worker when the
           // application finishes.
+          /**
+           * 给Executor创建本地目录，并将这些目录缓存到Worker的appDirectories属性中。这些目录将通过环境变量SPARK_EXECUTOR_DIRS传递
+           * 给Executor，并在Application完成后由Worker删除。
+           */
           val appLocalDirs = appDirectories.getOrElse(appId, {
             val localRootDirs = Utils.getOrCreateLocalRootDirs(conf)
             val dirs = localRootDirs.flatMap { dir =>
@@ -730,6 +746,10 @@ private[deploy] class Worker(
             dirs
           })
           appDirectories(appId) = appLocalDirs
+          /**
+           * 创建ExecutorRunner，并将ExecutorRunner放入executors。例如，假设appId为app-20170528125247-0000, execId为0，那么将
+           * app-20170528125247-0000/0与Executor-Runner的映射关系放入了executors
+           */
           val manager = new ExecutorRunner(
             appId,
             execId,
@@ -747,9 +767,11 @@ private[deploy] class Worker(
             conf,
             appLocalDirs, ExecutorState.RUNNING)
           executors(appId + "/" + execId) = manager
+          // 启动ExecutorRunner。
           manager.start()
           coresUsed += cores_
           memoryUsed += memory_
+          // 向Master发送ExecutorStateChanged消息以更新Executor的状态。
           sendToMaster(ExecutorStateChanged(appId, execId, manager.state, None, None))
         } catch {
           case e: Exception =>
@@ -782,6 +804,7 @@ private[deploy] class Worker(
 
     case LaunchDriver(driverId, driverDesc) =>
       logInfo(s"Asked to launch driver $driverId")
+      // 创建DriverRunner
       val driver = new DriverRunner(
         conf,
         driverId,
@@ -791,7 +814,9 @@ private[deploy] class Worker(
         self,
         workerUri,
         securityMgr)
+      // 将Driver的身份标识与DriverRunner的关系放入drivers中缓存。
       drivers(driverId) = driver
+      // 调用DriverRunner的start方法启动DriverRunner。
       driver.start()
 
       coresUsed += driverDesc.cores
@@ -1045,7 +1070,7 @@ private[deploy] object Worker extends Logging {
     // The LocalSparkCluster runs multiple local sparkWorkerX RPC Environments
     /**
      * 生成Worker的RpcEnv的名称。生成规则为SYSTEM_NAME后跟Worker号。由于常量SYSTEM_NAME的值为sparkWorker，所以Worker的RpcEnv的名称
-     * 将会是spark-Worker0、sparkWorker1等。
+     * 将会是sparkWorker0、sparkWorker1等。
      */
     val systemName = SYSTEM_NAME + workerNumber.map(_.toString).getOrElse("")
     // 初始化securityManager,后续另外解析securityManager组件

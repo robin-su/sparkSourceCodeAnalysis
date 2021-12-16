@@ -169,7 +169,9 @@ private[deploy] class DriverRunner(
   }
 
   private[worker] def prepareAndRunDriver(): Int = {
+    // 1.创建Driver的工作目录
     val driverDir = createWorkingDirectory()
+    // 2.下载用户指定的Jar文件
     val localJarFilename = downloadUserJar(driverDir)
 
     def substituteVariables(argument: String): String = argument match {
@@ -182,6 +184,9 @@ private[deploy] class DriverRunner(
     val builder = CommandUtils.buildProcessBuilder(driverDesc.command, securityManager,
       driverDesc.mem, sparkHome.getAbsolutePath, substituteVariables)
 
+    /**
+     * 调用runDriver方法运行Driver。由于在Standalone集群中运行Driver的方式已经被抛弃，并会在将来从Spark中移除
+     */
     runDriver(builder, driverDir, driverDesc.supervise)
   }
 
