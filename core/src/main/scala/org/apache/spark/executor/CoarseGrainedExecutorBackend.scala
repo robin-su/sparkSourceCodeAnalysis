@@ -37,22 +37,44 @@ import org.apache.spark.scheduler.cluster.CoarseGrainedClusterMessages._
 import org.apache.spark.serializer.SerializerInstance
 import org.apache.spark.util.{ThreadUtils, Utils}
 
+/**
+ * CoarseGrainedExecutorBackend是Driver与Executor通信的后端接口，但只在local-cluster和Standalone模式下才会使用
+ *
+ * @param rpcEnv
+ * @param driverUrl
+ * @param executorId
+ * @param hostname
+ * @param cores
+ * @param userClassPath
+ * @param env
+ */
 private[spark] class CoarseGrainedExecutorBackend(
     override val rpcEnv: RpcEnv,
-    driverUrl: String,
-    executorId: String,
-    hostname: String,
-    cores: Int,
-    userClassPath: Seq[URL],
-    env: SparkEnv)
+    driverUrl: String, // Driver的Spark格式的URL。例如，spark://CoarseGrainedScheduler@192.168.0.111:53777。
+    executorId: String, // Master分配给Executor的身份标识。
+    hostname: String, // 主机名。
+    cores: Int, // 分配给Executor的内核数。
+    userClassPath: Seq[URL], // 用户指定的类路径。
+    env: SparkEnv) // Executor所需的SparkEnv。
   extends ThreadSafeRpcEndpoint with ExecutorBackend with Logging {
-
+  /**
+   * 标记CoarseGrainedExecutorBackend是否正在停止。
+   */
   private[this] val stopping = new AtomicBoolean(false)
+  /**
+   * Executor实例。
+   */
   var executor: Executor = null
+  /**
+   * DriverEndpoint的RpcEndpointRef。
+   */
   @volatile var driver: Option[RpcEndpointRef] = None
 
   // If this CoarseGrainedExecutorBackend is changed to support multiple threads, then this may need
   // to be changed so that we don't share the serializer instance across threads
+  /**
+   * Executor所需的SparkEnv中的closureSerializer的实例。
+   */
   private[this] val ser: SerializerInstance = env.closureSerializer.newInstance()
 
   override def onStart() {
@@ -191,6 +213,9 @@ private[spark] object CoarseGrainedExecutorBackend extends Logging {
 
       // Bootstrap to fetch the driver's Spark properties.
       val executorConf = new SparkConf
+      /**
+       * 创建名为driverPropsFetcher的RpcEnv。此RpcEnv主要用于从Driver拉取属性信息，并非Executor的SparkEnv中的RpcEnv。
+       */
       val fetcher = RpcEnv.create(
         "driverPropsFetcher",
         hostname,
@@ -198,12 +223,24 @@ private[spark] object CoarseGrainedExecutorBackend extends Logging {
         executorConf,
         new SecurityManager(executorConf),
         clientMode = true)
+
       val driver = fetcher.setupEndpointRefByURI(driverUrl)
+      /**
+       * 向DriverEndpoint发送RetrieveSparkAppConfig消息，从CoarseGrainedSchedulerBackend获取所需的Spark属性信息和密钥。
+       */
       val cfg = driver.askSync[SparkAppConfig](RetrieveSparkAppConfig)
+      /**
+       * 将CoarseGrainedSchedulerBackend回复的SparkAppConfig消息中携带的Spark属性和Application的ID属性保存到props中。
+       */
       val props = cfg.sparkProperties ++ Seq[(String, String)](("spark.app.id", appId))
+      // 由于名为driverPropsFetcher的RpcEnv已经完成了它的使命，因此关闭它。
       fetcher.shutdown()
 
       // Create SparkEnv using properties we fetched from the driver.
+      /**
+       * 创建Executor自己的SparkConf。变量名driverConf说明SparkConf都是从Driver获取的。
+       * 将props中的属性全部保存到SparkConf中。
+       */
       val driverConf = new SparkConf()
       for ((key, value) <- props) {
         // this is required for SSL in standalone mode
@@ -218,11 +255,23 @@ private[spark] object CoarseGrainedExecutorBackend extends Logging {
         SparkHadoopUtil.get.addDelegationTokens(tokens, driverConf)
       }
 
+      /**
+       * 调用SparkEnv伴生对象的createExecutorEnv方法创建Executor自身的SparkEnv。
+       */
       val env = SparkEnv.createExecutorEnv(
         driverConf, executorId, hostname, cores, cfg.ioEncryptionKey, isLocal = false)
 
+      /**
+       * 创建CoarseGrainedExecutorBackend实例，并注册到Executor自身SparkEnv的子组件RpcEnv中。
+       */
       env.rpcEnv.setupEndpoint("Executor", new CoarseGrainedExecutorBackend(
         env.rpcEnv, driverUrl, executorId, hostname, cores, userClassPath, env))
+
+      /**
+       * 创建WorkerWatcher实例，并注册到Executor自身SparkEnv的子组件RpcEnv中。
+       * WorkerWatcher是Worker的守望者，当发生Worker进程退出、连接断开、网络出错等情况时，终止CoarseGrainedExecutorBackend进程。
+       * Worker与CoarseGrainedExecutorBackend进程相辅相成
+       */
       workerUrl.foreach { url =>
         env.rpcEnv.setupEndpoint("WorkerWatcher", new WorkerWatcher(env.rpcEnv, url))
       }

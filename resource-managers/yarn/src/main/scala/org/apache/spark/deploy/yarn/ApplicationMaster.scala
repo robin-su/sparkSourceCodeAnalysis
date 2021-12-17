@@ -402,16 +402,27 @@ private[spark] class ApplicationMaster(args: ApplicationMasterArguments) extends
     }
   }
 
+  /**
+   * 向Yarn注册ApplicationMaster
+   *
+   * @param host
+   * @param port
+   * @param _sparkConf
+   * @param uiAddress
+   */
   private def registerAM(
       host: String,
       port: Int,
       _sparkConf: SparkConf,
       uiAddress: Option[String]): Unit = {
+    // 获取Application的Id
     val appId = client.getAttemptId().getApplicationId().toString()
+    // 获取tAttemptId
     val attemptId = client.getAttemptId().getAttemptId().toString()
+    // 获取historyServer的地址
     val historyAddress = ApplicationMaster
       .getHistoryServerAddress(_sparkConf, yarnConf, appId, attemptId)
-
+    // 注册
     client.register(host, port, yarnConf, _sparkConf, uiAddress, historyAddress)
     registered = true
   }
